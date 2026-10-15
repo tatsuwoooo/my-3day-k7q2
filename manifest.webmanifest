@@ -1,0 +1,9 @@
+{
+  "name": "3日間スケジュール",
+  "short_name": "3日予定",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#f4f6fa",
+  "theme_color": "#2f6fed",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+}

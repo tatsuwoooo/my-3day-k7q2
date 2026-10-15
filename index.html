@@ -1,0 +1,518 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>3日間スケジュール</title>
+<meta name="theme-color" content="#2f6fed">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<style>
+:root{
+  --bg:#f4f6fa; --card:#fff; --text:#1d2433; --muted:#6b7385; --line:#e2e6ee;
+  --accent:#2f6fed; --accent-soft:#e7efff; --lock:#c98a00; --lock-soft:#fff5d6;
+  --sat:#2f6fed; --sun:#d93838; --danger:#d93838; --ok:#1f9d55;
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --bg:#12151c; --card:#1b2029; --text:#e6e9ef; --muted:#9aa3b5; --line:#2c3340;
+    --accent:#6b9bff; --accent-soft:#1f2c4a; --lock:#f0bb3a; --lock-soft:#3a3218;
+    --sat:#6b9bff; --sun:#ff6b6b; --danger:#ff6b6b; --ok:#4cc38a;
+  }
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--text);
+  font:15px/1.5 system-ui,-apple-system,"Hiragino Sans","Yu Gothic UI","Meiryo",sans-serif}
+button,input{font:inherit;color:inherit}
+button{cursor:pointer}
+header{position:sticky;top:0;z-index:5;background:var(--card);border-bottom:1px solid var(--line);
+  padding:8px 16px;padding-top:max(8px,env(safe-area-inset-top));display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+header h1{font-size:17px;margin:0 auto 0 0;white-space:nowrap}
+.btn{border:1px solid var(--line);background:var(--card);border-radius:8px;padding:6px 12px}
+.btn:hover{border-color:var(--accent)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.icon-btn{border:none;background:none;padding:4px 6px;border-radius:6px;color:var(--muted)}
+.icon-btn:hover{background:var(--bg);color:var(--text)}
+#syncBtn{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--muted)}
+#syncBtn .dot{width:8px;height:8px;border-radius:50%;background:var(--muted)}
+#syncBtn.ok .dot{background:var(--ok)} #syncBtn.err .dot{background:var(--danger)}
+#syncBtn.busy .dot{background:var(--accent);animation:pulse 1s infinite}
+@keyframes pulse{50%{opacity:.3}}
+
+main{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:16px;padding:16px;max-width:1400px;margin:0 auto}
+.days{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;align-items:start}
+.tabs{display:none}
+.day{background:var(--card);border:2px solid var(--line);border-radius:12px;padding:12px;min-height:200px;cursor:pointer}
+.day.sel{border-color:var(--accent)}
+.day h2{font-size:16px;margin:0 0 8px;display:flex;align-items:baseline;gap:8px}
+.day h2 .rel{font-size:12px;color:var(--muted);font-weight:normal}
+.sat{color:var(--sat)} .sun{color:var(--sun)}
+.items{list-style:none;margin:0 0 10px;padding:0}
+.item{display:flex;align-items:center;gap:6px;padding:6px 0;border-bottom:1px dashed var(--line)}
+.item input[type=checkbox]{width:18px;height:18px;flex:none}
+.item .time{font-variant-numeric:tabular-nums;color:var(--accent);font-size:13px;flex:none;min-width:3em}
+.item .text{flex:1;word-break:break-word;cursor:text}
+.item.done .text{text-decoration:line-through;color:var(--muted)}
+.item .edit{flex:1;min-width:0;padding:2px 6px;border:1px solid var(--accent);border-radius:6px;background:var(--bg)}
+.empty{color:var(--muted);font-size:13px;padding:6px 0}
+.add{display:flex;gap:6px;flex-wrap:wrap}
+.add input{border:1px solid var(--line);background:var(--bg);border-radius:8px;padding:6px 8px;min-width:0}
+.add input[name=time]{width:7em;flex:none}
+.add input[name=text]{flex:1 1 8em}
+
+.hist{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;align-self:start;
+  position:sticky;top:64px;max-height:calc(100vh - 80px);display:flex;flex-direction:column}
+.hist h2{font-size:16px;margin:0}
+.hist .target{font-size:13px;color:var(--muted);margin:2px 0 8px}
+.hist .target b{color:var(--accent)}
+.hist input[type=search]{width:100%;border:1px solid var(--line);background:var(--bg);border-radius:8px;padding:6px 8px;margin-bottom:8px}
+.hlist{list-style:none;margin:0;padding:0;overflow:auto;flex:1}
+.h{display:flex;align-items:center;gap:2px;border-radius:8px;margin-bottom:4px;background:var(--bg)}
+.h.locked{background:var(--lock-soft)}
+.h .use{flex:1;text-align:left;border:none;background:none;padding:8px 10px;word-break:break-word}
+.h .use:hover{color:var(--accent)}
+.h .lock.on{color:var(--lock)}
+.sep{font-size:12px;color:var(--muted);margin:8px 2px 4px}
+
+dialog{border:1px solid var(--line);border-radius:12px;background:var(--card);color:var(--text);max-width:520px;width:calc(100% - 32px)}
+dialog::backdrop{background:rgba(0,0,0,.4)}
+dialog h3{margin:0 0 12px}
+dialog label{display:block;font-size:13px;color:var(--muted);margin:10px 0 4px}
+dialog input[type=text]{width:100%;border:1px solid var(--line);background:var(--bg);border-radius:8px;padding:6px 8px}
+dialog .row{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+dialog .note{font-size:12px;color:var(--muted);margin-top:6px}
+#toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--text);color:var(--bg);
+  padding:8px 16px;border-radius:20px;font-size:14px;opacity:0;pointer-events:none;transition:opacity .2s;z-index:20}
+#toast.show{opacity:.95}
+
+@media (max-width:900px){
+  main{grid-template-columns:minmax(0,1fr);padding:12px 16px}
+  .tabs{display:flex;gap:6px}
+  .tabs button{flex:1;border:1px solid var(--line);background:var(--card);border-radius:10px;padding:6px 4px;font-size:14px;line-height:1.3}
+  .tabs button.sel{background:var(--accent);border-color:var(--accent);color:#fff}
+  .tabs button small{display:block;font-size:11px;opacity:.8}
+  .days{grid-template-columns:1fr}
+  .day{display:none;cursor:default;min-height:0}
+  .day.sel{display:block;border-color:var(--line)}
+  .hist{position:static;max-height:none}
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>3日間スケジュール</h1>
+  <button class="btn" id="prev" aria-label="前の日">◀</button>
+  <button class="btn" id="today">今日</button>
+  <button class="btn" id="next" aria-label="次の日">▶</button>
+  <button class="icon-btn" id="syncBtn" title="今すぐ同期"><span class="dot"></span><span id="syncText">未接続</span></button>
+  <button class="icon-btn" id="settingsBtn" title="設定" aria-label="設定">⚙</button>
+</header>
+
+<main>
+  <section>
+    <div class="tabs" id="tabs"></div>
+    <div class="days" id="days"></div>
+  </section>
+  <aside class="hist">
+    <h2>予定履歴</h2>
+    <div class="target" id="target"></div>
+    <input type="search" id="hfilter" placeholder="履歴を絞り込み">
+    <ul class="hlist" id="hlist"></ul>
+  </aside>
+</main>
+
+<dialog id="settings">
+  <h3>設定・pCloud同期</h3>
+  <div id="connState"></div>
+  <label for="cfgClient">pCloud App Key（client_id）</label>
+  <input type="text" id="cfgClient" autocomplete="off" spellcheck="false">
+  <label for="cfgApp">pCloudに登録したアプリ名</label>
+  <input type="text" id="cfgApp" autocomplete="off" spellcheck="false">
+  <div class="note">データは pCloud の「Applications / アプリ名」フォルダに schedule.json として保存されます</div>
+  <div class="note">リダイレクトURI（pCloudのアプリ設定に登録）: <code id="redirectUri"></code></div>
+  <div class="row">
+    <button class="btn primary" id="connectBtn">pCloudに接続</button>
+    <button class="btn" id="disconnectBtn">切断</button>
+    <button class="btn" id="syncNowBtn">今すぐ同期</button>
+  </div>
+  <label>バックアップ</label>
+  <div class="row" style="margin-top:0">
+    <button class="btn" id="exportBtn">JSONを書き出し</button>
+    <button class="btn" id="importBtn">JSONを読み込み（統合）</button>
+    <input type="file" id="importFile" accept="application/json,.json" hidden>
+  </div>
+  <div class="row" style="justify-content:flex-end">
+    <button class="btn" id="closeSettings">閉じる</button>
+  </div>
+</dialog>
+
+<div id="toast"></div>
+
+<script>
+'use strict';
+const LS_DATA = 'tds_data', LS_CFG = 'tds_cfg', SS_STATE = 'tds_oauth_state';
+const HISTORY_LIMIT = 200;          // ロックしていない履歴の上限
+const TOMBSTONE_DAYS = 60;          // 削除記録を残す日数（他端末への削除反映用）
+const $ = s => document.querySelector(s);
+
+function loadLS(k){ try{ return JSON.parse(localStorage.getItem(k)) }catch(e){ return null } }
+function saveLS(k,v){ try{ localStorage.setItem(k, JSON.stringify(v)) }catch(e){} }
+function normalize(d){
+  d = d && typeof d === 'object' ? d : {};
+  return { version:1, entries: d.entries || {}, history: d.history || {} };
+}
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,8);
+const now = () => Date.now();
+
+const FILE_NAME = 'schedule.json';
+let cfg = Object.assign({ clientId:'', appName:'', token:'', host:'', folderId:null, folderLabel:'' }, loadLS(LS_CFG) || {});
+let data = normalize(loadLS(LS_DATA));
+let offset = 0, selected = 0, editingId = null;
+
+/* ---------- 日付 ---------- */
+const WD = ['日','月','火','水','木','金','土'];
+function ymd(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0') }
+function dayAt(i){ const d = new Date(); d.setHours(0,0,0,0); d.setDate(d.getDate()+offset+i); return d }
+function relLabel(d){
+  const t = new Date(); t.setHours(0,0,0,0);
+  const diff = Math.round((d - t) / 864e5);
+  return {'-1':'昨日','0':'今日','1':'明日','2':'明後日'}[diff] || (diff > 0 ? diff+'日後' : -diff+'日前');
+}
+function wdClass(d){ return d.getDay()===0 ? 'sun' : d.getDay()===6 ? 'sat' : '' }
+function shortDate(d){ return `${d.getMonth()+1}/${d.getDate()}(${WD[d.getDay()]})` }
+
+/* ---------- データ操作 ---------- */
+function commit(){ data.version = 1; saveLS(LS_DATA, data); render(); scheduleSync(); }
+
+function touchHistory(text){
+  text = text.trim(); if(!text) return;
+  const h = data.history[text];
+  data.history[text] = { text, locked: h && !h.deleted ? !!h.locked : false,
+    count: (h && !h.deleted ? h.count||0 : 0) + 1, lastUsed: now(), updatedAt: now(), deleted:false };
+  // ロックなし履歴が多すぎる場合は古いものから削除
+  const free = Object.values(data.history).filter(x => !x.deleted && !x.locked).sort((a,b)=>b.lastUsed-a.lastUsed);
+  free.slice(HISTORY_LIMIT).forEach(x => { data.history[x.text] = { ...x, deleted:true, updatedAt:now() } });
+}
+function addEntry(date, text, time){
+  text = text.trim(); if(!text) return;
+  const id = uid();
+  data.entries[id] = { id, date, time: time||'', text, done:false, createdAt:now(), updatedAt:now(), deleted:false };
+  touchHistory(text);
+  commit();
+}
+function updateEntry(id, patch){
+  const e = data.entries[id]; if(!e) return;
+  data.entries[id] = { ...e, ...patch, updatedAt: now() };
+  if(patch.text) touchHistory(patch.text);
+  commit();
+}
+function entriesOf(date){
+  return Object.values(data.entries).filter(e => !e.deleted && e.date === date).sort((a,b)=>{
+    if(a.time && b.time && a.time !== b.time) return a.time < b.time ? -1 : 1;
+    if(!!a.time !== !!b.time) return a.time ? -1 : 1;     // 時刻なしは後ろ
+    return (a.createdAt||0) - (b.createdAt||0);
+  });
+}
+function sortedHistory(){
+  // ロック済みが先頭、その中・外それぞれ最近使った順
+  return Object.values(data.history).filter(h => !h.deleted)
+    .sort((a,b) => (b.locked - a.locked) || (b.lastUsed - a.lastUsed));
+}
+
+/* ---------- 描画 ---------- */
+function render(){
+  const days = [0,1,2].map(dayAt);
+  $('#tabs').innerHTML = days.map((d,i)=>
+    `<button data-tab="${i}" class="${i===selected?'sel':''}"><span class="${i===selected?'':wdClass(d)}">${shortDate(d)}</span><small>${relLabel(d)}</small></button>`).join('');
+
+  $('#days').innerHTML = days.map((d,i)=>{
+    const date = ymd(d), list = entriesOf(date);
+    return `<article class="day ${i===selected?'sel':''}" data-idx="${i}">
+      <h2><span class="${wdClass(d)}">${shortDate(d)}</span><span class="rel">${relLabel(d)}</span></h2>
+      <ul class="items">${list.length ? list.map(e => `
+        <li class="item ${e.done?'done':''}" data-id="${e.id}">
+          <input type="checkbox" data-act="toggle" ${e.done?'checked':''} aria-label="完了">
+          <span class="time">${esc(e.time)}</span>
+          ${editingId===e.id
+            ? `<input class="edit" data-act="editbox" value="${esc(e.text)}">`
+            : `<span class="text" data-act="edit" title="クリックで編集">${esc(e.text)}</span>`}
+          <button class="icon-btn" data-act="del" title="削除" aria-label="削除">✕</button>
+        </li>`).join('') : '<li class="empty">予定はありません</li>'}</ul>
+      <form class="add" data-date="${date}">
+        <input type="time" name="time" aria-label="時刻">
+        <input name="text" placeholder="予定を入力" autocomplete="off" enterkeyhint="done">
+        <button class="btn primary">追加</button>
+      </form>
+    </article>`;
+  }).join('');
+
+  $('#target').innerHTML = `クリックで <b>${shortDate(days[selected])}</b> に追加`;
+  renderHistory();
+
+  if(editingId){ const box = document.querySelector('.edit'); if(box){ box.focus(); box.select(); } }
+}
+function renderHistory(){
+  const q = $('#hfilter').value.trim().toLowerCase();
+  const list = sortedHistory().filter(h => !q || h.text.toLowerCase().includes(q));
+  let html = '', shownSep = false;
+  if(!list.length) html = `<li class="empty">${q ? '該当なし' : '予定を書き込むとここに履歴が表示されます'}</li>`;
+  list.forEach((h,i) => {
+    if(!h.locked && !shownSep && i > 0){ html += '<li class="sep">最近使った履歴</li>'; shownSep = true; }
+    html += `<li class="h ${h.locked?'locked':''}" data-key="${esc(h.text)}">
+      <button class="use" data-act="use">${esc(h.text)}</button>
+      <button class="icon-btn lock ${h.locked?'on':''}" data-act="lock" title="${h.locked?'ロック解除':'ロック（先頭に固定）'}">${h.locked?'🔒':'🔓'}</button>
+      ${h.locked ? '' : '<button class="icon-btn" data-act="hdel" title="履歴から削除" aria-label="履歴から削除">✕</button>'}
+    </li>`;
+  });
+  $('#hlist').innerHTML = html;
+}
+function toast(msg){ const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toast.t); toast.t = setTimeout(()=>t.classList.remove('show'), 1600); }
+
+/* ---------- イベント ---------- */
+$('#prev').onclick = () => { offset--; render() };
+$('#next').onclick = () => { offset++; render() };
+$('#today').onclick = () => { offset = 0; selected = 0; render() };
+$('#tabs').onclick = e => { const b = e.target.closest('[data-tab]'); if(b){ selected = +b.dataset.tab; render() } };
+$('#hfilter').oninput = renderHistory;
+
+$('#days').addEventListener('submit', e => {
+  e.preventDefault();
+  const f = e.target, text = f.text.value;
+  if(!text.trim()) return;
+  selected = +f.closest('.day').dataset.idx;
+  addEntry(f.dataset.date, text, f.time.value);
+  const nf = document.querySelector(`.add[data-date="${f.dataset.date}"]`);
+  if(nf) nf.text.focus();
+});
+// 再描画せずに選択日だけ切り替える（入力中のフォーカスを保つため）
+function selectDay(i){
+  if(i === selected) return;
+  selected = i;
+  document.querySelectorAll('.day').forEach(x => x.classList.toggle('sel', +x.dataset.idx === i));
+  document.querySelectorAll('[data-tab]').forEach(x => x.classList.toggle('sel', +x.dataset.tab === i));
+  $('#target').innerHTML = `クリックで <b>${shortDate(dayAt(i))}</b> に追加`;
+}
+$('#days').addEventListener('focusin', e => { const day = e.target.closest('.day'); if(day) selectDay(+day.dataset.idx) });
+$('#days').addEventListener('click', e => {
+  const day = e.target.closest('.day');
+  if(day) selectDay(+day.dataset.idx);
+  const act = e.target.dataset.act, li = e.target.closest('.item'); if(!li) return;
+  const id = li.dataset.id;
+  if(act === 'toggle') updateEntry(id, { done: e.target.checked });
+  else if(act === 'del'){ data.entries[id] = { ...data.entries[id], deleted:true, updatedAt:now() }; commit(); }
+  else if(act === 'edit'){ editingId = id; render(); }
+});
+function finishEdit(box, save){
+  if(!editingId) return;
+  const id = editingId; editingId = null;
+  const v = box.value.trim();
+  if(save && v && v !== data.entries[id].text) updateEntry(id, { text: v }); else render();
+}
+$('#days').addEventListener('keydown', e => {
+  if(e.target.dataset.act !== 'editbox') return;
+  if(e.key === 'Enter' && !e.isComposing){ e.preventDefault(); finishEdit(e.target, true) }
+  if(e.key === 'Escape') finishEdit(e.target, false);
+});
+$('#days').addEventListener('focusout', e => { if(e.target.dataset.act === 'editbox') finishEdit(e.target, true) });
+
+$('#hlist').addEventListener('click', e => {
+  const act = e.target.closest('[data-act]')?.dataset.act, li = e.target.closest('.h'); if(!li || !act) return;
+  const key = li.dataset.key, h = data.history[key]; if(!h) return;
+  if(act === 'use'){
+    const date = ymd(dayAt(selected));
+    const f = document.querySelector(`.add[data-date="${date}"]`);
+    addEntry(date, h.text, f ? f.time.value : '');
+    toast(`${shortDate(dayAt(selected))} に追加しました`);
+  } else if(act === 'lock'){
+    data.history[key] = { ...h, locked: !h.locked, updatedAt: now() }; commit();
+  } else if(act === 'hdel'){
+    data.history[key] = { ...h, deleted:true, updatedAt: now() }; commit();
+  }
+});
+
+/* ---------- pCloud 同期 ---------- */
+const connected = () => !!(cfg.token && cfg.host);
+const AUTH_ERRORS = [1000, 2000, 2094, 2095];
+let syncing = false, syncAgain = false, syncTimer = null;
+
+function setStatus(kind, text){
+  const b = $('#syncBtn'); b.className = 'icon-btn ' + kind; $('#syncText').textContent = text; b.title = text;
+}
+function apiUrl(method, params){
+  const u = new URL(`https://${cfg.host}/${method}`);
+  for(const k in params) u.searchParams.set(k, params[k]);
+  u.searchParams.set('access_token', cfg.token);
+  return u;
+}
+async function check(res){
+  const j = await res.json();
+  if(j.result !== 0){ const err = new Error(j.error || 'pCloud error ' + j.result); err.code = j.result; throw err; }
+  return j;
+}
+const api = (method, params) => fetch(apiUrl(method, params)).then(check);
+
+// アプリ専用フォルダ（pCloud の /Applications/<アプリ名>）を特定する。
+// トークンから見たルート(folderid 0)がそのアプリフォルダになる場合と、
+// /Applications/<アプリ名> として見える場合の両方に対応する。
+async function resolveFolder(){
+  if(cfg.folderId != null) return cfg.folderId;
+  let meta;
+  try{
+    meta = (await api('listfolder', { folderid: 0, nofiles: 1 })).metadata;
+  }catch(e){
+    if(e.code !== 2003 && e.code !== 2005) throw e;
+    meta = null;
+  }
+  const hasApps = meta && (meta.contents || []).some(c => c.isfolder && c.name === 'Applications');
+  if((!meta || hasApps) && cfg.appName){
+    try{ meta = (await api('listfolder', { path: '/Applications/' + cfg.appName, nofiles: 1 })).metadata; }
+    catch(e){ if(!meta) throw e; }
+  }
+  if(!meta) throw new Error('アプリ専用フォルダが見つかりません。設定でアプリ名を確認してください');
+  cfg.folderId = meta.folderid;
+  cfg.folderLabel = meta.path || (hasApps ? '/' : '/Applications/' + (cfg.appName || '（アプリ名）'));
+  saveLS(LS_CFG, cfg);
+  return cfg.folderId;
+}
+async function pullRemote(){
+  const folderid = await resolveFolder();
+  let list;
+  try{ list = await api('listfolder', { folderid }); }
+  catch(e){ if(e.code === 2005){ cfg.folderId = null; saveLS(LS_CFG, cfg); } throw e; }
+  const f = (list.metadata.contents || []).find(c => !c.isfolder && c.name === FILE_NAME);
+  if(!f) return null;                                       // まだファイルが無い
+  const j = await api('getfilelink', { fileid: f.fileid });
+  const res = await fetch('https://' + j.hosts[0] + j.path, { cache:'no-store' });
+  return normalize(await res.json());
+}
+async function pushRemote(d){
+  const folderid = await resolveFolder();
+  const fd = new FormData();
+  fd.append('file', new Blob([JSON.stringify(d)], { type:'application/json' }), FILE_NAME);
+  await fetch(apiUrl('uploadfile', { folderid, nopartial: 1 }), { method:'POST', body: fd }).then(check);
+}
+
+function mergeMap(a, b){
+  const out = { ...a };
+  for(const k in b) if(!out[k] || (b[k].updatedAt||0) > (out[k].updatedAt||0)) out[k] = b[k];
+  return out;
+}
+function purge(d){
+  const limit = now() - TOMBSTONE_DAYS * 864e5;
+  for(const m of [d.entries, d.history]) for(const k in m) if(m[k].deleted && (m[k].updatedAt||0) < limit) delete m[k];
+  return d;
+}
+function sameMap(a, b){
+  const ka = Object.keys(a), kb = Object.keys(b);
+  return ka.length === kb.length && ka.every(k => b[k] && b[k].updatedAt === a[k].updatedAt);
+}
+const sameData = (a, b) => sameMap(a.entries, b.entries) && sameMap(a.history, b.history);
+
+async function sync(){
+  if(!connected()) return;
+  if(syncing){ syncAgain = true; return; }
+  syncing = true; setStatus('busy', '同期中…');
+  try{
+    const remote = await pullRemote();
+    const merged = purge(normalize({
+      entries: mergeMap(data.entries, remote ? remote.entries : {}),
+      history: mergeMap(data.history, remote ? remote.history : {}),
+    }));
+    if(!sameData(merged, data)){ data = merged; saveLS(LS_DATA, data); if(!editingId) render(); }
+    if(!remote || !sameData(merged, remote)) await pushRemote(merged);
+    const t = new Date();
+    setStatus('ok', `同期済み ${t.getHours()}:${String(t.getMinutes()).padStart(2,'0')}`);
+  }catch(e){
+    console.error(e);
+    if(AUTH_ERRORS.includes(e.code)){ cfg.token = ''; saveLS(LS_CFG, cfg); setStatus('err', '再接続が必要'); }
+    else setStatus('err', '同期エラー');
+    toast('同期できませんでした: ' + e.message);
+  }finally{
+    syncing = false;
+    if(syncAgain){ syncAgain = false; sync(); }
+  }
+}
+function scheduleSync(){ if(!connected()) return; clearTimeout(syncTimer); syncTimer = setTimeout(sync, 1200); }
+
+function redirectUri(){ return location.origin + location.pathname }
+function connect(){
+  readSettingsForm();
+  if(!cfg.clientId){ alert('pCloud の App Key（client_id）を入力してください'); return; }
+  if(location.protocol !== 'https:' && location.hostname !== 'localhost'){ alert('pCloud接続はhttpsで公開したページから行ってください（README参照）'); return; }
+  const state = uid(); sessionStorage.setItem(SS_STATE, state);
+  const u = new URL('https://my.pcloud.com/oauth2/authorize');
+  u.searchParams.set('client_id', cfg.clientId);
+  u.searchParams.set('response_type', 'token');
+  u.searchParams.set('redirect_uri', redirectUri());
+  u.searchParams.set('state', state);
+  location.href = u;
+}
+function handleOAuthReturn(){
+  if(!location.hash.includes('access_token')) return;
+  const h = new URLSearchParams(location.hash.slice(1));
+  const expected = sessionStorage.getItem(SS_STATE);
+  sessionStorage.removeItem(SS_STATE);
+  history.replaceState(null, '', location.pathname + location.search);
+  if(!expected || h.get('state') !== expected){ toast('接続を確認できませんでした。もう一度お試しください'); return; }
+  cfg.token = h.get('access_token');
+  cfg.host = h.get('hostname') || (h.get('locationid') === '2' ? 'eapi.pcloud.com' : 'api.pcloud.com');
+  cfg.folderId = null;
+  saveLS(LS_CFG, cfg);
+  toast('pCloudに接続しました');
+}
+// 設定欄の値を保存。App Key かアプリ名が変わったら保存先フォルダを探し直す
+function readSettingsForm(){
+  const clientId = $('#cfgClient').value.trim(), appName = $('#cfgApp').value.trim();
+  const changed = clientId !== cfg.clientId || appName !== cfg.appName;
+  cfg.clientId = clientId; cfg.appName = appName;
+  if(changed) cfg.folderId = null;
+  saveLS(LS_CFG, cfg);
+  return changed;
+}
+
+/* ---------- 設定ダイアログ ---------- */
+function openSettings(){
+  $('#cfgClient').value = cfg.clientId;
+  $('#cfgApp').value = cfg.appName;
+  $('#redirectUri').textContent = redirectUri();
+  const where = cfg.folderId != null ? `<br>保存先: ${esc(cfg.folderLabel || '')}/${FILE_NAME}` : '';
+  $('#connState').innerHTML = connected()
+    ? `<span style="color:var(--ok)">● pCloudに接続中</span>（${esc(cfg.host)}）${where}`
+    : '<span style="color:var(--muted)">● 未接続（この端末の中だけに保存されています）</span>';
+  $('#settings').showModal();
+}
+$('#settingsBtn').onclick = openSettings;
+$('#closeSettings').onclick = () => { const changed = readSettingsForm(); $('#settings').close(); if(changed) sync(); };
+$('#connectBtn').onclick = connect;
+$('#disconnectBtn').onclick = () => { cfg.token = ''; cfg.host = ''; cfg.folderId = null; saveLS(LS_CFG, cfg); setStatus('', '未接続'); openSettings(); };
+$('#syncNowBtn').onclick = () => { readSettingsForm(); $('#settings').close(); sync(); };
+$('#syncBtn').onclick = () => connected() ? sync() : openSettings();
+$('#exportBtn').onclick = () => {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 1)], { type:'application/json' }));
+  a.download = `schedule-${ymd(new Date())}.json`; a.click();
+};
+$('#importBtn').onclick = () => $('#importFile').click();
+$('#importFile').onchange = async e => {
+  const f = e.target.files[0]; if(!f) return;
+  try{
+    const d = normalize(JSON.parse(await f.text()));
+    data = normalize({ entries: mergeMap(data.entries, d.entries), history: mergeMap(data.history, d.history) });
+    commit(); toast('読み込みました');
+  }catch(err){ alert('読み込めませんでした: ' + err.message) }
+  e.target.value = '';
+};
+
+/* ---------- 起動 ---------- */
+handleOAuthReturn();
+render();
+if(connected()){ sync(); } else { setStatus('', '未接続'); }
+document.addEventListener('visibilitychange', () => { if(document.visibilityState === 'visible'){ render(); sync(); } });
+setInterval(() => { if(document.visibilityState === 'visible' && !editingId) sync(); }, 60000);
+// 日付が変わったら表示を更新
+let lastDay = ymd(new Date());
+setInterval(() => { const d = ymd(new Date()); if(d !== lastDay){ lastDay = d; if(!editingId) render(); } }, 60000);
+</script>
+</body>
+</html>
