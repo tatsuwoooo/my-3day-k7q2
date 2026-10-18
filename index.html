@@ -50,6 +50,9 @@ main{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:16px;padding:16p
 .items{list-style:none;margin:0 0 10px;padding:0}
 .item{display:flex;align-items:center;gap:6px;padding:6px 0;border-bottom:1px dashed var(--line)}
 .item input[type=checkbox]{width:18px;height:18px;flex:none}
+.item .mv{display:flex;flex:none}
+.item .mv button{border:none;background:none;color:var(--muted);padding:2px 3px;font-size:12px;line-height:1;border-radius:4px}
+.item .mv button:hover{background:var(--bg);color:var(--accent)}
 .item .time{font-variant-numeric:tabular-nums;color:var(--accent);font-size:13px;flex:none;min-width:3em}
 .item .text{flex:1;word-break:break-word;cursor:text}
 .item.done .text{text-decoration:line-through;color:var(--muted)}
@@ -232,6 +235,7 @@ function render(){
       <ul class="items">${list.length ? list.map(e => `
         <li class="item ${e.done?'done':''}" data-id="${e.id}">
           <input type="checkbox" data-act="toggle" ${e.done?'checked':''} aria-label="完了">
+          <span class="mv"><button data-act="mv" data-d="-1" title="前の日へ移動" aria-label="前の日へ移動">◀</button><button data-act="mv" data-d="1" title="次の日へ移動" aria-label="次の日へ移動">▶</button></span>
           <span class="time">${esc(e.time)}</span>
           ${editingId===e.id
             ? `<input class="edit" data-act="editbox" value="${esc(e.text)}">`
@@ -301,6 +305,12 @@ $('#days').addEventListener('click', e => {
   if(act === 'toggle') updateEntry(id, { done: e.target.checked });
   else if(act === 'del'){ data.entries[id] = { ...data.entries[id], deleted:true, updatedAt:now() }; commit(); }
   else if(act === 'edit'){ editingId = id; render(); }
+  else if(act === 'mv'){
+    const [y, m, d] = data.entries[id].date.split('-').map(Number);
+    const to = new Date(y, m - 1, d + +e.target.dataset.d);
+    updateEntry(id, { date: ymd(to) });
+    toast(`${shortDate(to)} に移動しました`);
+  }
 });
 function finishEdit(box, save){
   if(!editingId) return;
