@@ -74,15 +74,14 @@ body.cal-mode .tabs, body.cal-mode .days, body:not(.cal-mode) .cal{display:none}
 .cal .grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));border-top:1px solid var(--line);border-left:1px solid var(--line)}
 .cal .wd,.cal .cell{border-right:1px solid var(--line);border-bottom:1px solid var(--line)}
 .cal .wd{font-size:12px;text-align:center;padding:4px 0;color:var(--muted)}
-.cal .cell{min-height:100px;padding:4px;cursor:pointer;overflow:hidden;min-width:0}
+.cal .cell{min-height:100px;padding:4px;cursor:pointer;min-width:0}
 .cal .cell:hover{background:var(--accent-soft)}
 .cal .cell.other{opacity:.45}
 .cal .num{display:inline-block;font-size:13px;font-weight:600;padding:0 6px;border-radius:10px;margin-bottom:2px}
 .cal .cell.today .num{background:var(--accent);color:#fff}
-.cal .ev{font-size:12px;line-height:1.45;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cal .ev{font-size:12px;line-height:1.35;word-break:break-all;margin-bottom:2px}
 .cal .ev .t{color:var(--accent);margin-right:3px;font-variant-numeric:tabular-nums}
 .cal .ev.done{text-decoration:line-through;color:var(--muted)}
-.cal .more{font-size:11px;color:var(--muted)}
 
 .hist{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;align-self:start;
   position:sticky;top:64px;max-height:calc(100vh - 80px);display:flex;flex-direction:column}
@@ -292,7 +291,7 @@ function render(){
 
   if(editingId){ const box = document.querySelector('.edit'); if(box){ box.focus(); box.select(); } }
 }
-const CAL_MAX = 4;   // 1マスに表示する予定の数（超えた分は「他N件」）
+// 予定は省略せず全件表示。多い日はその週の行が縦に伸びる
 function renderCal(){
   const y = calMonth.getFullYear(), m = calMonth.getMonth();
   const start = new Date(y, m, 1 - new Date(y, m, 1).getDay());   // 月初を含む週の日曜
@@ -304,8 +303,7 @@ function renderCal(){
     const list = entriesOf(date);
     cells += `<div class="cell ${d.getMonth() !== m ? 'other' : ''} ${date === today ? 'today' : ''}" data-date="${date}" title="${shortDate(d)} を3日間表示で開く">
       <span class="num ${wdClass(d)}">${d.getDate()}</span>
-      ${list.slice(0, CAL_MAX).map(e => `<div class="ev ${e.done?'done':''}">${e.time ? `<span class="t">${esc(e.time)}</span>` : ''}${esc(e.text)}</div>`).join('')}
-      ${list.length > CAL_MAX ? `<div class="more">他${list.length - CAL_MAX}件</div>` : ''}
+      ${list.map(e => `<div class="ev ${e.done?'done':''}">${e.time ? `<span class="t">${esc(e.time)}</span>` : ''}${esc(e.text)}</div>`).join('')}
     </div>`;
   }
   $('#cal').innerHTML = `<h2>${y}年${m + 1}月</h2>
