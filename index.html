@@ -63,6 +63,27 @@ main{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:16px;padding:16p
 .add input[name=time]{width:7em;flex:none}
 .add input[name=text]{flex:1 1 8em}
 
+.viewsw{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;flex:none}
+.viewsw button{border:none;background:var(--card);padding:6px 10px;white-space:nowrap}
+.viewsw button+button{border-left:1px solid var(--line)}
+.viewsw button.sel{background:var(--accent);color:#fff}
+body.cal-mode .tabs, body.cal-mode .days, body:not(.cal-mode) .cal{display:none}
+
+.cal{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px}
+.cal h2{font-size:16px;margin:0 0 8px}
+.cal .grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));border-top:1px solid var(--line);border-left:1px solid var(--line)}
+.cal .wd,.cal .cell{border-right:1px solid var(--line);border-bottom:1px solid var(--line)}
+.cal .wd{font-size:12px;text-align:center;padding:4px 0;color:var(--muted)}
+.cal .cell{min-height:100px;padding:4px;cursor:pointer;overflow:hidden;min-width:0}
+.cal .cell:hover{background:var(--accent-soft)}
+.cal .cell.other{opacity:.45}
+.cal .num{display:inline-block;font-size:13px;font-weight:600;padding:0 6px;border-radius:10px;margin-bottom:2px}
+.cal .cell.today .num{background:var(--accent);color:#fff}
+.cal .ev{font-size:12px;line-height:1.45;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cal .ev .t{color:var(--accent);margin-right:3px;font-variant-numeric:tabular-nums}
+.cal .ev.done{text-decoration:line-through;color:var(--muted)}
+.cal .more{font-size:11px;color:var(--muted)}
+
 .hist{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;align-self:start;
   position:sticky;top:64px;max-height:calc(100vh - 80px);display:flex;flex-direction:column}
 .hist h2{font-size:16px;margin:0}
@@ -98,6 +119,11 @@ dialog .note{font-size:12px;color:var(--muted);margin-top:6px}
   .day{display:none;cursor:default;min-height:0}
   .day.sel{display:block;border-color:var(--line)}
   .hist{position:static;max-height:none}
+  .cal{padding:8px}
+  .cal .cell{min-height:68px;padding:2px}
+  .cal .num{font-size:12px;padding:0 4px}
+  .cal .ev{font-size:10px;line-height:1.35}
+  .cal .ev .t{display:none}
 }
 </style>
 </head>
@@ -109,12 +135,16 @@ dialog .note{font-size:12px;color:var(--muted);margin-top:6px}
   <button class="btn" id="next" aria-label="次の日">▶</button>
   <button class="icon-btn" id="syncBtn" title="今すぐ同期"><span class="dot"></span><span id="syncText">未接続</span></button>
   <button class="icon-btn" id="settingsBtn" title="設定" aria-label="設定">⚙</button>
+  <div class="viewsw" id="viewsw">
+    <button data-view="3day">3日間</button><button data-view="cal">カレンダー</button>
+  </div>
 </header>
 
 <main>
   <section>
     <div class="tabs" id="tabs"></div>
     <div class="days" id="days"></div>
+    <div class="cal" id="cal"></div>
   </section>
   <aside class="hist">
     <h2>予定履歴</h2>
@@ -171,6 +201,7 @@ let cfg = Object.assign({ clientId:'', refreshToken:'', token:'', tokenExp:0 }, 
 try{ localStorage.removeItem('tds_cfg') }catch(e){}   // 旧 pCloud 設定
 let data = normalize(loadLS(LS_DATA));
 let offset = 0, selected = 0, editingId = null;
+let view = '3day', calMonth = null;   // calMonth: カレンダーに表示中の月の1日
 
 /* ---------- 日付 ---------- */
 const WD = ['日','月','火','水','木','金','土'];
@@ -253,7 +284,44 @@ function render(){
   $('#target').innerHTML = `クリックで <b>${shortDate(days[selected])}</b> に追加`;
   renderHistory();
 
+  document.body.classList.toggle('cal-mode', view === 'cal');
+  document.querySelectorAll('[data-view]').forEach(b => b.classList.toggle('sel', b.dataset.view === view));
+  const unit = view === 'cal' ? '月' : '日';
+  for(const [id, w] of [['#prev','前'], ['#next','次']]){ $(id).title = `${w}の${unit}`; $(id).setAttribute('aria-label', `${w}の${unit}`); }
+  if(view === 'cal') renderCal();
+
   if(editingId){ const box = document.querySelector('.edit'); if(box){ box.focus(); box.select(); } }
+}
+const CAL_MAX = 4;   // 1マスに表示する予定の数（超えた分は「他N件」）
+function renderCal(){
+  const y = calMonth.getFullYear(), m = calMonth.getMonth();
+  const start = new Date(y, m, 1 - new Date(y, m, 1).getDay());   // 月初を含む週の日曜
+  const weeks = Math.ceil((new Date(y, m, 1).getDay() + new Date(y, m + 1, 0).getDate()) / 7);
+  const today = ymd(new Date());
+  let cells = '';
+  for(let i = 0; i < weeks * 7; i++){
+    const d = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i), date = ymd(d);
+    const list = entriesOf(date);
+    cells += `<div class="cell ${d.getMonth() !== m ? 'other' : ''} ${date === today ? 'today' : ''}" data-date="${date}" title="${shortDate(d)} を3日間表示で開く">
+      <span class="num ${wdClass(d)}">${d.getDate()}</span>
+      ${list.slice(0, CAL_MAX).map(e => `<div class="ev ${e.done?'done':''}">${e.time ? `<span class="t">${esc(e.time)}</span>` : ''}${esc(e.text)}</div>`).join('')}
+      ${list.length > CAL_MAX ? `<div class="more">他${list.length - CAL_MAX}件</div>` : ''}
+    </div>`;
+  }
+  $('#cal').innerHTML = `<h2>${y}年${m + 1}月</h2>
+    <div class="grid">${WD.map((w, i) => `<div class="wd ${i === 0 ? 'sun' : i === 6 ? 'sat' : ''}">${w}</div>`).join('')}${cells}</div>`;
+}
+function setView(v){
+  if(v === 'cal'){ const d = dayAt(selected); calMonth = new Date(d.getFullYear(), d.getMonth(), 1); }
+  view = v; editingId = null; render();
+}
+// 押した日付を真ん中にした3日間（前日・当日・翌日）を表示する
+function openDate(date){
+  const [y, m, d] = date.split('-').map(Number);
+  const t = new Date(); t.setHours(0,0,0,0);
+  offset = Math.round((new Date(y, m - 1, d) - t) / 864e5) - 1;
+  selected = 1; view = '3day'; render();
+  window.scrollTo(0, 0);
 }
 function renderHistory(){
   const q = $('#hfilter').value.trim().toLowerCase();
@@ -273,9 +341,15 @@ function renderHistory(){
 function toast(msg){ const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toast.t); toast.t = setTimeout(()=>t.classList.remove('show'), 1600); }
 
 /* ---------- イベント ---------- */
-$('#prev').onclick = () => { offset--; render() };
-$('#next').onclick = () => { offset++; render() };
-$('#today').onclick = () => { offset = 0; selected = 0; render() };
+const shiftMonth = n => { calMonth = new Date(calMonth.getFullYear(), calMonth.getMonth() + n, 1); render() };
+$('#prev').onclick = () => { if(view === 'cal') shiftMonth(-1); else { offset--; render() } };
+$('#next').onclick = () => { if(view === 'cal') shiftMonth(1); else { offset++; render() } };
+$('#today').onclick = () => {
+  if(view === 'cal'){ const t = new Date(); calMonth = new Date(t.getFullYear(), t.getMonth(), 1); render(); }
+  else { offset = 0; selected = 0; render() }
+};
+$('#viewsw').onclick = e => { const b = e.target.closest('[data-view]'); if(b) setView(b.dataset.view) };
+$('#cal').onclick = e => { const c = e.target.closest('.cell'); if(c) openDate(c.dataset.date) };
 $('#tabs').onclick = e => { const b = e.target.closest('[data-tab]'); if(b){ selected = +b.dataset.tab; render() } };
 $('#hfilter').oninput = renderHistory;
 
