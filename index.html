@@ -166,6 +166,9 @@ dialog .note{font-size:12px;color:var(--muted);margin-top:6px}
   <input type="text" id="cfgApp" autocomplete="off" spellcheck="false">
   <label for="cfgLink">schedule.json の共有リンク（読み込み用）</label>
   <input type="text" id="cfgLink" autocomplete="off" spellcheck="false" placeholder="https://u.pcloud.link/publink/show?code=…">
+  <label for="cfgPass">暗号化パスワード（全端末で同じものを1回入力）</label>
+  <input type="password" id="cfgPass" autocomplete="new-password">
+  <div class="note" id="passNote"></div>
   <div class="note">データは pCloud の「Applications / アプリ名」フォルダに schedule.json として保存されます</div>
   <div class="note">pCloud はブラウザからのファイル読み込みを認めていないため、schedule.json の「ダウンロードリンク」経由で読み込みます（README参照）</div>
   <div class="note">Redirect URI（pCloudのアプリ設定に登録）: <code id="redirectUri"></code></div>
@@ -205,7 +208,7 @@ const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,8
 const now = () => Date.now();
 
 const FILE_NAME = 'schedule.json';
-let cfg = Object.assign({ clientId:'', appName:'', token:'', host:'', folderId:null, folderLabel:'', pubCode:'' }, loadLS(LS_CFG) || {});
+let cfg = Object.assign({ clientId:'', appName:'', token:'', host:'', folderId:null, folderLabel:'', pubCode:'', pubFileId:null, encKey:'' }, loadLS(LS_CFG) || {});
 try{ localStorage.removeItem('tds_dbx') }catch(e){}   // 旧 Dropbox 設定
 let data = normalize(loadLS(LS_DATA));
 let offset = 0, selected = 0, editingId = null;
@@ -477,6 +480,35 @@ async function resolveFolder(){
   saveLS(LS_CFG, cfg);
   return cfg.folderId;
 }
+/* 暗号化：共有リンクは知っていれば誰でも読めるので、pCloud 上の schedule.json は AES-GCM で暗号化する。
+   鍵はパスワードから PBKDF2 で作り、端末ごとに cfg.encKey（パスワード自体は保存しない）に覚える。
+   ファイル形式 { enc:'AES-GCM', v:1, iv, data }（base64）。全端末で同じパスワードが必要 */
+const ENC_SALT = 'my-3day-k7q2:schedule.json', ENC_ITER = 310000;
+let remotePlain = false;   // 直前に読んだ pCloud のファイルが平文だったか（暗号化して書き直すため）
+function toB64(buf){
+  const b = new Uint8Array(buf); let s = '';
+  for(let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode(...b.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+const fromB64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+async function deriveKey(pass){
+  const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(pass), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits({ name:'PBKDF2', salt: new TextEncoder().encode(ENC_SALT), iterations: ENC_ITER, hash:'SHA-256' }, base, 256);
+  return toB64(bits);
+}
+const aesKey = () => crypto.subtle.importKey('raw', fromB64(cfg.encKey), 'AES-GCM', false, ['encrypt', 'decrypt']);
+async function encryptData(d){
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({ name:'AES-GCM', iv }, await aesKey(), new TextEncoder().encode(JSON.stringify(d)));
+  return JSON.stringify({ enc:'AES-GCM', v:1, iv: toB64(iv), data: toB64(ct) });
+}
+async function decryptData(j){
+  if(!cfg.encKey) throw new Error('pCloud のデータは暗号化されています。⚙ で暗号化パスワードを入力してください');
+  let pt;
+  try{ pt = await crypto.subtle.decrypt({ name:'AES-GCM', iv: fromB64(j.iv) }, await aesKey(), fromB64(j.data)); }
+  catch(e){ throw new Error('暗号化パスワードが違います（ほかの端末と同じパスワードにしてください）'); }
+  return JSON.parse(new TextDecoder().decode(pt));
+}
 async function pullRemote(){
   const folderid = await resolveFolder();
   let list;
@@ -495,13 +527,15 @@ async function pullRemote(){
   if(cfg.pubFileId !== f.fileid){ cfg.pubFileId = null; saveLS(LS_CFG, cfg); throw new Error('共有リンクが保存先の schedule.json のものではありません'); }
   const res = await fetch(`https://${cfg.host}/getpubtextfile?code=${encodeURIComponent(cfg.pubCode)}`, { cache:'no-store' });
   const j = await res.json();
-  if(typeof j.result === 'number' && !j.entries){ const err = new Error('共有リンクを読めません: ' + (j.error || j.result)); err.code = j.result; throw err; }
-  return normalize(j);
+  if(typeof j.result === 'number' && !j.entries && !j.enc){ const err = new Error('共有リンクを読めません: ' + (j.error || j.result)); err.code = j.result; throw err; }
+  remotePlain = !j.enc;
+  return normalize(j.enc ? await decryptData(j) : j);
 }
 async function pushRemote(d){
   const folderid = await resolveFolder();
   const fd = new FormData();
-  fd.append('file', new Blob([JSON.stringify(d)], { type:'application/json' }), FILE_NAME);
+  const body = cfg.encKey ? await encryptData(d) : JSON.stringify(d);
+  fd.append('file', new Blob([body], { type:'application/json' }), FILE_NAME);
   await fetch(apiUrl('uploadfile', { folderid, nopartial: 1 }), { method:'POST', body: fd }).then(check);
 }
 
@@ -532,7 +566,7 @@ async function sync(){
       history: mergeMap(data.history, remote ? remote.history : {}),
     }));
     if(!sameData(merged, data)){ data = merged; saveLS(LS_DATA, data); if(!editingId) render(); }
-    if(!remote || !sameData(merged, remote)) await pushRemote(merged);
+    if(!remote || (remotePlain && cfg.encKey) || !sameData(merged, remote)) await pushRemote(merged);
     const t = new Date();
     setStatus('ok', `同期済み ${t.getHours()}:${String(t.getMinutes()).padStart(2,'0')}`);
   }catch(e){
@@ -549,8 +583,8 @@ function scheduleSync(){ if(!connected()) return; clearTimeout(syncTimer); syncT
 
 function redirectUri(){ return location.origin + location.pathname }
 // OAuth2 implicit flow（ブラウザだけで完結、client secret 不要）。トークンは #access_token で戻る
-function connect(){
-  readSettingsForm();
+async function connect(){
+  await readSettingsForm();
   if(!cfg.clientId){ alert('pCloud の App Key（client_id）を入力してください'); return; }
   if(location.protocol !== 'https:' && location.hostname !== 'localhost'){ alert('pCloud接続はhttpsで公開したページから行ってください（README参照）'); return; }
   const state = uid(); sessionStorage.setItem(SS_STATE, state);
@@ -573,7 +607,8 @@ function handleOAuthReturn(){
   toast('pCloudに接続しました');
 }
 // 設定欄の値を保存。App Key が変わったら接続し直し、アプリ名が変わったら保存先フォルダを探し直す
-function readSettingsForm(){
+// 暗号化パスワードは入力があったときだけ鍵に変換して保存（パスワード自体は保存しない）
+async function readSettingsForm(){
   const clientId = $('#cfgClient').value.trim(), appName = $('#cfgApp').value.trim();
   const link = $('#cfgLink').value.trim(), pubCode = (link.match(/[?&]code=([^&#\s]+)/) || [, link])[1];
   const keyChanged = clientId !== cfg.clientId, changed = keyChanged || appName !== cfg.appName || pubCode !== cfg.pubCode;
@@ -581,8 +616,15 @@ function readSettingsForm(){
   cfg.clientId = clientId; cfg.appName = appName; cfg.pubCode = pubCode;
   if(keyChanged){ cfg.token = ''; cfg.host = ''; }
   if(changed) cfg.folderId = null;
+  const pass = $('#cfgPass').value;
+  $('#cfgPass').value = '';
+  let passChanged = false;
+  if(pass){
+    if(!window.crypto || !crypto.subtle) alert('暗号化はhttpsで公開したページでのみ使えます');
+    else { const k = await deriveKey(pass); passChanged = k !== cfg.encKey; cfg.encKey = k; }
+  }
   saveLS(LS_CFG, cfg);
-  return changed;
+  return changed || passChanged;
 }
 
 /* ---------- 設定ダイアログ ---------- */
@@ -590,6 +632,11 @@ function openSettings(){
   $('#cfgClient').value = cfg.clientId;
   $('#cfgApp').value = cfg.appName;
   $('#cfgLink').value = cfg.pubCode ? 'https://u.pcloud.link/publink/show?code=' + cfg.pubCode : '';
+  $('#cfgPass').value = '';
+  $('#cfgPass').placeholder = cfg.encKey ? '設定済み（変えるときだけ入力）' : '未設定';
+  $('#passNote').textContent = cfg.encKey
+    ? 'この端末には暗号化パスワードが設定されています。pCloud には暗号化して保存します'
+    : '未設定のままだと、共有リンクを知っている人は予定を読めます。忘れると pCloud 上のデータは誰にも読めません';
   $('#redirectUri').textContent = redirectUri();
   const where = cfg.folderId != null ? `<br>保存先: ${esc(cfg.folderLabel || '')}/${FILE_NAME}` : '';
   $('#connState').innerHTML = connected()
@@ -598,13 +645,13 @@ function openSettings(){
   $('#settings').showModal();
 }
 $('#settingsBtn').onclick = openSettings;
-$('#closeSettings').onclick = () => {
-  const changed = readSettingsForm(); $('#settings').close();
+$('#closeSettings').onclick = async () => {
+  const changed = await readSettingsForm(); $('#settings').close();
   if(!connected()) setStatus('', '未接続'); else if(changed) sync();
 };
 $('#connectBtn').onclick = connect;
-$('#disconnectBtn').onclick = () => { cfg.token = ''; cfg.host = ''; cfg.folderId = null; saveLS(LS_CFG, cfg); setStatus('', '未接続'); openSettings(); };
-$('#syncNowBtn').onclick = () => { readSettingsForm(); $('#settings').close(); sync(); };
+$('#disconnectBtn').onclick = () => { cfg.token = ''; cfg.host = ''; cfg.folderId = null; cfg.encKey = ''; saveLS(LS_CFG, cfg); setStatus('', '未接続'); openSettings(); };
+$('#syncNowBtn').onclick = async () => { await readSettingsForm(); $('#settings').close(); sync(); };
 $('#syncBtn').onclick = () => connected() ? sync() : openSettings();
 $('#exportBtn').onclick = () => {
   const a = document.createElement('a');
