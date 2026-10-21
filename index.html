@@ -164,7 +164,10 @@ dialog .note{font-size:12px;color:var(--muted);margin-top:6px}
   <input type="text" id="cfgClient" autocomplete="off" spellcheck="false">
   <label for="cfgApp">pCloudに登録したアプリ名</label>
   <input type="text" id="cfgApp" autocomplete="off" spellcheck="false">
+  <label for="cfgLink">schedule.json の共有リンク（読み込み用）</label>
+  <input type="text" id="cfgLink" autocomplete="off" spellcheck="false" placeholder="https://u.pcloud.link/publink/show?code=…">
   <div class="note">データは pCloud の「Applications / アプリ名」フォルダに schedule.json として保存されます</div>
+  <div class="note">pCloud はブラウザからのファイル読み込みを認めていないため、schedule.json の「ダウンロードリンク」経由で読み込みます（README参照）</div>
   <div class="note">Redirect URI（pCloudのアプリ設定に登録）: <code id="redirectUri"></code></div>
   <div class="row">
     <button class="btn primary" id="connectBtn">pCloudに接続</button>
@@ -202,7 +205,7 @@ const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,8
 const now = () => Date.now();
 
 const FILE_NAME = 'schedule.json';
-let cfg = Object.assign({ clientId:'', appName:'', token:'', host:'', folderId:null, folderLabel:'' }, loadLS(LS_CFG) || {});
+let cfg = Object.assign({ clientId:'', appName:'', token:'', host:'', folderId:null, folderLabel:'', pubCode:'' }, loadLS(LS_CFG) || {});
 try{ localStorage.removeItem('tds_dbx') }catch(e){}   // 旧 Dropbox 設定
 let data = normalize(loadLS(LS_DATA));
 let offset = 0, selected = 0, editingId = null;
@@ -481,10 +484,19 @@ async function pullRemote(){
   catch(e){ if(e.code === 2005){ cfg.folderId = null; saveLS(LS_CFG, cfg); } throw e; }
   const f = (list.metadata.contents || []).find(c => !c.isfolder && c.name === FILE_NAME);
   if(!f) return null;                                       // まだファイルが無い
-  const j = await api('getfilelink', { fileid: f.fileid });
-  const res = await fetch('https://' + j.hosts[0] + j.path, { cache:'no-store' });
-  if(!res.ok) throw new Error('download HTTP ' + res.status);
-  return normalize(await res.json());
+  // getfilelink 等はブラウザから使えない（7010 Invalid link referer）ので、
+  // ユーザーが作った共有リンク経由で getpubtextfile で読む。uploadfile の上書きでも fileid は変わらない
+  if(!cfg.pubCode) throw new Error('⚙ で schedule.json の共有リンクを設定してください');
+  if(cfg.pubFileId == null){                                // リンク先が本当にこのファイルか一度だけ確認
+    const s = await fetch(`https://${cfg.host}/showpublink?code=${encodeURIComponent(cfg.pubCode)}`, { cache:'no-store' }).then(r => r.json());
+    if(s.result !== 0) throw new Error('共有リンクを確認できません: ' + (s.error || s.result));
+    cfg.pubFileId = s.metadata.fileid; saveLS(LS_CFG, cfg);
+  }
+  if(cfg.pubFileId !== f.fileid){ cfg.pubFileId = null; saveLS(LS_CFG, cfg); throw new Error('共有リンクが保存先の schedule.json のものではありません'); }
+  const res = await fetch(`https://${cfg.host}/getpubtextfile?code=${encodeURIComponent(cfg.pubCode)}`, { cache:'no-store' });
+  const j = await res.json();
+  if(typeof j.result === 'number' && !j.entries){ const err = new Error('共有リンクを読めません: ' + (j.error || j.result)); err.code = j.result; throw err; }
+  return normalize(j);
 }
 async function pushRemote(d){
   const folderid = await resolveFolder();
@@ -563,8 +575,10 @@ function handleOAuthReturn(){
 // 設定欄の値を保存。App Key が変わったら接続し直し、アプリ名が変わったら保存先フォルダを探し直す
 function readSettingsForm(){
   const clientId = $('#cfgClient').value.trim(), appName = $('#cfgApp').value.trim();
-  const keyChanged = clientId !== cfg.clientId, changed = keyChanged || appName !== cfg.appName;
-  cfg.clientId = clientId; cfg.appName = appName;
+  const link = $('#cfgLink').value.trim(), pubCode = (link.match(/[?&]code=([^&#\s]+)/) || [, link])[1];
+  const keyChanged = clientId !== cfg.clientId, changed = keyChanged || appName !== cfg.appName || pubCode !== cfg.pubCode;
+  if(pubCode !== cfg.pubCode) cfg.pubFileId = null;
+  cfg.clientId = clientId; cfg.appName = appName; cfg.pubCode = pubCode;
   if(keyChanged){ cfg.token = ''; cfg.host = ''; }
   if(changed) cfg.folderId = null;
   saveLS(LS_CFG, cfg);
@@ -575,6 +589,7 @@ function readSettingsForm(){
 function openSettings(){
   $('#cfgClient').value = cfg.clientId;
   $('#cfgApp').value = cfg.appName;
+  $('#cfgLink').value = cfg.pubCode ? 'https://u.pcloud.link/publink/show?code=' + cfg.pubCode : '';
   $('#redirectUri').textContent = redirectUri();
   const where = cfg.folderId != null ? `<br>保存先: ${esc(cfg.folderLabel || '')}/${FILE_NAME}` : '';
   $('#connState').innerHTML = connected()
