@@ -158,14 +158,16 @@ dialog .note{font-size:12px;color:var(--muted);margin-top:6px}
 </main>
 
 <dialog id="settings">
-  <h3>設定・Dropbox同期</h3>
+  <h3>設定・pCloud同期</h3>
   <div id="connState"></div>
-  <label for="cfgClient">Dropbox App key</label>
+  <label for="cfgClient">pCloud App Key（client_id）</label>
   <input type="text" id="cfgClient" autocomplete="off" spellcheck="false">
-  <div class="note">データは Dropbox の「アプリ / アプリ名」フォルダに schedule.json として保存されます</div>
-  <div class="note">Redirect URI（Dropboxのアプリ設定に登録）: <code id="redirectUri"></code></div>
+  <label for="cfgApp">pCloudに登録したアプリ名</label>
+  <input type="text" id="cfgApp" autocomplete="off" spellcheck="false">
+  <div class="note">データは pCloud の「Applications / アプリ名」フォルダに schedule.json として保存されます</div>
+  <div class="note">Redirect URI（pCloudのアプリ設定に登録）: <code id="redirectUri"></code></div>
   <div class="row">
-    <button class="btn primary" id="connectBtn">Dropboxに接続</button>
+    <button class="btn primary" id="connectBtn">pCloudに接続</button>
     <button class="btn" id="disconnectBtn">切断</button>
     <button class="btn" id="syncNowBtn">今すぐ同期</button>
   </div>
@@ -184,7 +186,7 @@ dialog .note{font-size:12px;color:var(--muted);margin-top:6px}
 
 <script>
 'use strict';
-const LS_DATA = 'tds_data', LS_CFG = 'tds_dbx', SS_OAUTH = 'tds_oauth';
+const LS_DATA = 'tds_data', LS_CFG = 'tds_pcloud', SS_STATE = 'tds_oauth_state';
 const HISTORY_LIMIT = 200;          // ロックしていない履歴の上限
 const TOMBSTONE_DAYS = 60;          // 削除記録を残す日数（他端末への削除反映用）
 const $ = s => document.querySelector(s);
@@ -200,8 +202,8 @@ const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,8
 const now = () => Date.now();
 
 const FILE_NAME = 'schedule.json';
-let cfg = Object.assign({ clientId:'', refreshToken:'', token:'', tokenExp:0 }, loadLS(LS_CFG) || {});
-try{ localStorage.removeItem('tds_cfg') }catch(e){}   // 旧 pCloud 設定
+let cfg = Object.assign({ clientId:'', appName:'', token:'', host:'', folderId:null, folderLabel:'' }, loadLS(LS_CFG) || {});
+try{ localStorage.removeItem('tds_dbx') }catch(e){}   // 旧 Dropbox 設定
 let data = normalize(loadLS(LS_DATA));
 let offset = 0, selected = 0, editingId = null;
 let view = '3day', calMonth = null;   // calMonth: カレンダーに表示中の月の1日
@@ -427,64 +429,68 @@ $('#hlist').addEventListener('click', e => {
   }
 });
 
-/* ---------- Dropbox 同期 ---------- */
-// アプリ権限は「App folder」。パスは /アプリ/<アプリ名>/ からの相対になる
-const connected = () => !!cfg.refreshToken;
-const REMOTE_PATH = '/' + FILE_NAME;
+/* ---------- pCloud 同期 ---------- */
+const connected = () => !!(cfg.token && cfg.host);
+const AUTH_ERRORS = [1000, 2000, 2094, 2095];
 let syncing = false, syncAgain = false, syncTimer = null;
 
 function setStatus(kind, text){
   const b = $('#syncBtn'); b.className = 'icon-btn ' + kind; $('#syncText').textContent = text; b.title = text;
 }
-function authError(msg){ const e = new Error(msg); e.auth = true; return e; }
+// CORS プリフライトを避けるため、トークンはヘッダでなくクエリで渡す
+function apiUrl(method, params){
+  const u = new URL(`https://${cfg.host}/${method}`);
+  for(const k in params) u.searchParams.set(k, params[k]);
+  u.searchParams.set('access_token', cfg.token);
+  return u;
+}
+async function check(res){
+  const j = await res.json();
+  if(j.result !== 0){ const err = new Error(j.error || 'pCloud error ' + j.result); err.code = j.result; throw err; }
+  return j;
+}
+const api = (method, params) => fetch(apiUrl(method, params), { cache:'no-store' }).then(check);
 
-// OAuth トークンエンドポイント（form 送信なので CORS プリフライトなし）
-async function tokenRequest(params){
-  const res = await fetch('https://api.dropboxapi.com/oauth2/token', {
-    method:'POST', body: new URLSearchParams({ client_id: cfg.clientId, ...params }),
-  });
-  const j = await res.json().catch(() => ({}));
-  if(!res.ok){
-    const msg = j.error_description || j.error || ('HTTP ' + res.status);
-    throw (j.error === 'invalid_grant' || j.error === 'invalid_client') ? authError(msg) : new Error(msg);
+// アプリ専用フォルダ（pCloud の /Applications/<アプリ名>）を特定する。
+// トークンから見たルート(folderid 0)がそのアプリフォルダになる場合と、
+// /Applications/<アプリ名> として見える場合の両方に対応する。
+async function resolveFolder(){
+  if(cfg.folderId != null) return cfg.folderId;
+  let meta;
+  try{
+    meta = (await api('listfolder', { folderid: 0, nofiles: 1 })).metadata;
+  }catch(e){
+    if(e.code !== 2003 && e.code !== 2005) throw e;
+    meta = null;
   }
-  cfg.token = j.access_token;
-  cfg.tokenExp = now() + (j.expires_in || 14400) * 1000 - 60000;
-  if(j.refresh_token) cfg.refreshToken = j.refresh_token;
+  const hasApps = meta && (meta.contents || []).some(c => c.isfolder && c.name === 'Applications');
+  if((!meta || hasApps) && cfg.appName){
+    try{ meta = (await api('listfolder', { path: '/Applications/' + cfg.appName, nofiles: 1 })).metadata; }
+    catch(e){ if(!meta) throw e; }
+  }
+  if(!meta) throw new Error('アプリ専用フォルダが見つかりません。設定でアプリ名を確認してください');
+  cfg.folderId = meta.folderid;
+  cfg.folderLabel = meta.path || (hasApps ? '/' : '/Applications/' + (cfg.appName || '（アプリ名）'));
   saveLS(LS_CFG, cfg);
-}
-async function accessToken(force){
-  if(force || !cfg.token || now() > cfg.tokenExp) await tokenRequest({ grant_type:'refresh_token', refresh_token: cfg.refreshToken });
-  return cfg.token;
-}
-// content.dropboxapi.com の呼び出し。期限切れ(401)なら1回だけ更新して再試行
-async function content(endpoint, arg, body){
-  for(let retry = 0; ; retry++){
-    const res = await fetch('https://content.dropboxapi.com/2/files/' + endpoint, {
-      method:'POST', cache:'no-store',
-      headers: Object.assign(
-        { 'Authorization': 'Bearer ' + await accessToken(retry > 0), 'Dropbox-API-Arg': JSON.stringify(arg) },
-        body != null ? { 'Content-Type': 'application/octet-stream' } : {}),
-      body,
-    });
-    if(res.status === 401 && retry === 0) continue;
-    if(res.status === 401) throw authError('認証が切れました');
-    return res;
-  }
+  return cfg.folderId;
 }
 async function pullRemote(){
-  const res = await content('download', { path: REMOTE_PATH });
-  if(res.status === 409){
-    const j = await res.json().catch(() => ({}));
-    if(/not_found/.test(j.error_summary || '')) return null;   // まだファイルが無い
-    throw new Error(j.error_summary || 'download error');
-  }
+  const folderid = await resolveFolder();
+  let list;
+  try{ list = await api('listfolder', { folderid }); }
+  catch(e){ if(e.code === 2005){ cfg.folderId = null; saveLS(LS_CFG, cfg); } throw e; }
+  const f = (list.metadata.contents || []).find(c => !c.isfolder && c.name === FILE_NAME);
+  if(!f) return null;                                       // まだファイルが無い
+  const j = await api('getfilelink', { fileid: f.fileid });
+  const res = await fetch('https://' + j.hosts[0] + j.path, { cache:'no-store' });
   if(!res.ok) throw new Error('download HTTP ' + res.status);
   return normalize(await res.json());
 }
 async function pushRemote(d){
-  const res = await content('upload', { path: REMOTE_PATH, mode:'overwrite', mute:true }, JSON.stringify(d));
-  if(!res.ok){ const j = await res.json().catch(() => ({})); throw new Error(j.error_summary || 'upload HTTP ' + res.status); }
+  const folderid = await resolveFolder();
+  const fd = new FormData();
+  fd.append('file', new Blob([JSON.stringify(d)], { type:'application/json' }), FILE_NAME);
+  await fetch(apiUrl('uploadfile', { folderid, nopartial: 1 }), { method:'POST', body: fd }).then(check);
 }
 
 function mergeMap(a, b){
@@ -519,7 +525,7 @@ async function sync(){
     setStatus('ok', `同期済み ${t.getHours()}:${String(t.getMinutes()).padStart(2,'0')}`);
   }catch(e){
     console.error(e);
-    if(e.auth){ cfg.token = ''; cfg.refreshToken = ''; saveLS(LS_CFG, cfg); setStatus('err', '再接続が必要'); }
+    if(AUTH_ERRORS.includes(e.code)){ cfg.token = ''; saveLS(LS_CFG, cfg); setStatus('err', '再接続が必要'); }
     else setStatus('err', '同期エラー');
     toast('同期できませんでした: ' + e.message);
   }finally{
@@ -530,42 +536,37 @@ async function sync(){
 function scheduleSync(){ if(!connected()) return; clearTimeout(syncTimer); syncTimer = setTimeout(sync, 1200); }
 
 function redirectUri(){ return location.origin + location.pathname }
-const b64url = bytes => btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
-// OAuth2 Authorization Code + PKCE（ブラウザだけで完結、client secret 不要）
-async function connect(){
+// OAuth2 implicit flow（ブラウザだけで完結、client secret 不要）。トークンは #access_token で戻る
+function connect(){
   readSettingsForm();
-  if(!cfg.clientId){ alert('Dropbox の App key を入力してください'); return; }
-  if(!window.isSecureContext){ alert('Dropbox接続はhttpsで公開したページから行ってください（README参照）'); return; }
-  const verifier = b64url(crypto.getRandomValues(new Uint8Array(48)));
-  const challenge = b64url(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier)));
-  const state = uid();
-  sessionStorage.setItem(SS_OAUTH, JSON.stringify({ state, verifier }));
-  const u = new URL('https://www.dropbox.com/oauth2/authorize');
-  u.search = new URLSearchParams({
-    client_id: cfg.clientId, response_type:'code', redirect_uri: redirectUri(), state,
-    code_challenge: challenge, code_challenge_method:'S256', token_access_type:'offline',
-  });
+  if(!cfg.clientId){ alert('pCloud の App Key（client_id）を入力してください'); return; }
+  if(location.protocol !== 'https:' && location.hostname !== 'localhost'){ alert('pCloud接続はhttpsで公開したページから行ってください（README参照）'); return; }
+  const state = uid(); sessionStorage.setItem(SS_STATE, state);
+  const u = new URL('https://my.pcloud.com/oauth2/authorize');
+  u.search = new URLSearchParams({ client_id: cfg.clientId, response_type:'token', redirect_uri: redirectUri(), state });
   location.href = u;
 }
-async function handleOAuthReturn(){
-  const q = new URLSearchParams(location.search);
-  if(!q.has('code') && !q.has('error')) return;
-  const saved = JSON.parse(sessionStorage.getItem(SS_OAUTH) || 'null');
-  sessionStorage.removeItem(SS_OAUTH);
-  history.replaceState(null, '', location.pathname);
-  if(q.has('error')){ toast('接続がキャンセルされました'); return; }
-  if(!saved || q.get('state') !== saved.state){ toast('接続を確認できませんでした。もう一度お試しください'); return; }
-  try{
-    await tokenRequest({ grant_type:'authorization_code', code: q.get('code'), code_verifier: saved.verifier, redirect_uri: redirectUri() });
-    toast('Dropboxに接続しました');
-  }catch(e){ console.error(e); toast('接続に失敗しました: ' + e.message); }
+function handleOAuthReturn(){
+  const h = new URLSearchParams(location.hash.slice(1));
+  if(!h.has('access_token') && !h.has('error')) return;
+  const expected = sessionStorage.getItem(SS_STATE);
+  sessionStorage.removeItem(SS_STATE);
+  history.replaceState(null, '', location.pathname + location.search);
+  if(h.has('error')){ toast('接続がキャンセルされました'); return; }
+  if(!expected || h.get('state') !== expected){ toast('接続を確認できませんでした。もう一度お試しください'); return; }
+  cfg.token = h.get('access_token');
+  cfg.host = h.get('hostname') || (h.get('locationid') === '2' ? 'eapi.pcloud.com' : 'api.pcloud.com');
+  cfg.folderId = null;
+  saveLS(LS_CFG, cfg);
+  toast('pCloudに接続しました');
 }
-// 設定欄の値を保存。App key が変わったら接続し直しが必要
+// 設定欄の値を保存。App Key が変わったら接続し直し、アプリ名が変わったら保存先フォルダを探し直す
 function readSettingsForm(){
-  const clientId = $('#cfgClient').value.trim();
-  const changed = clientId !== cfg.clientId;
-  cfg.clientId = clientId;
-  if(changed){ cfg.token = ''; cfg.refreshToken = ''; }
+  const clientId = $('#cfgClient').value.trim(), appName = $('#cfgApp').value.trim();
+  const keyChanged = clientId !== cfg.clientId, changed = keyChanged || appName !== cfg.appName;
+  cfg.clientId = clientId; cfg.appName = appName;
+  if(keyChanged){ cfg.token = ''; cfg.host = ''; }
+  if(changed) cfg.folderId = null;
   saveLS(LS_CFG, cfg);
   return changed;
 }
@@ -573,19 +574,21 @@ function readSettingsForm(){
 /* ---------- 設定ダイアログ ---------- */
 function openSettings(){
   $('#cfgClient').value = cfg.clientId;
+  $('#cfgApp').value = cfg.appName;
   $('#redirectUri').textContent = redirectUri();
+  const where = cfg.folderId != null ? `<br>保存先: ${esc(cfg.folderLabel || '')}/${FILE_NAME}` : '';
   $('#connState').innerHTML = connected()
-    ? `<span style="color:var(--ok)">● Dropboxに接続中</span>`
+    ? `<span style="color:var(--ok)">● pCloudに接続中</span>（${esc(cfg.host)}）${where}`
     : '<span style="color:var(--muted)">● 未接続（この端末の中だけに保存されています）</span>';
   $('#settings').showModal();
 }
 $('#settingsBtn').onclick = openSettings;
-$('#closeSettings').onclick = () => { if(readSettingsForm()) setStatus('', '未接続'); $('#settings').close(); };
-$('#connectBtn').onclick = connect;
-$('#disconnectBtn').onclick = () => {
-  if(cfg.token) fetch('https://api.dropboxapi.com/2/auth/token/revoke', { method:'POST', headers:{ 'Authorization':'Bearer ' + cfg.token } }).catch(()=>{});
-  cfg.token = ''; cfg.refreshToken = ''; saveLS(LS_CFG, cfg); setStatus('', '未接続'); openSettings();
+$('#closeSettings').onclick = () => {
+  const changed = readSettingsForm(); $('#settings').close();
+  if(!connected()) setStatus('', '未接続'); else if(changed) sync();
 };
+$('#connectBtn').onclick = connect;
+$('#disconnectBtn').onclick = () => { cfg.token = ''; cfg.host = ''; cfg.folderId = null; saveLS(LS_CFG, cfg); setStatus('', '未接続'); openSettings(); };
 $('#syncNowBtn').onclick = () => { readSettingsForm(); $('#settings').close(); sync(); };
 $('#syncBtn').onclick = () => connected() ? sync() : openSettings();
 $('#exportBtn').onclick = () => {
@@ -605,9 +608,9 @@ $('#importFile').onchange = async e => {
 };
 
 /* ---------- 起動 ---------- */
+handleOAuthReturn();
 render();
-setStatus('', '未接続');
-handleOAuthReturn().then(() => { if(connected()) sync(); });
+if(connected()){ sync(); } else { setStatus('', '未接続'); }
 document.addEventListener('visibilitychange', () => { if(document.visibilityState === 'visible'){ render(); sync(); } });
 setInterval(() => { if(document.visibilityState === 'visible' && !editingId) sync(); }, 60000);
 // 日付が変わったら表示を更新
