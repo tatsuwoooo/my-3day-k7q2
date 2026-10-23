@@ -92,13 +92,19 @@ body.cal-mode .tabs, body.cal-mode .days, body:not(.cal-mode) .cal{display:none}
 .hist .target{font-size:13px;color:var(--muted);margin:2px 0 8px}
 .hist .target b{color:var(--accent)}
 .hist input[type=search]{width:100%;border:1px solid var(--line);background:var(--bg);border-radius:8px;padding:6px 8px;margin-bottom:8px}
-.hlist{list-style:none;margin:0;padding:0;overflow:auto;flex:1}
-.h{display:flex;align-items:center;gap:2px;border-radius:8px;margin-bottom:4px;background:var(--bg)}
+#hlist{overflow:auto;flex:1}
+.hgrid{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px}
+.h{display:flex;align-items:center;min-width:0;border-radius:8px;background:var(--bg)}
 .h.locked{background:var(--lock-soft)}
-.h .use{flex:1;text-align:left;border:none;background:none;padding:8px 10px;word-break:break-word}
+.h .use{flex:1;min-width:0;text-align:left;border:none;background:none;padding:7px 4px 7px 8px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .h .use:hover{color:var(--accent)}
+.h .icon-btn{padding:4px 2px;font-size:12px;flex:none}
 .h .lock.on{color:var(--lock)}
-.sep{font-size:12px;color:var(--muted);margin:8px 2px 4px}
+.hmore{margin-top:8px}
+.hmore summary{cursor:pointer;font-size:13px;color:var(--muted);padding:6px 4px;border-radius:8px}
+.hmore summary:hover{color:var(--accent)}
+.hmore .hgrid{margin-top:4px}
 
 dialog{border:1px solid var(--line);border-radius:12px;background:var(--card);color:var(--text);max-width:520px;width:calc(100% - 32px)}
 dialog::backdrop{background:rgba(0,0,0,.4)}
@@ -153,7 +159,7 @@ dialog .note{font-size:12px;color:var(--muted);margin-top:6px}
     <h2>予定履歴</h2>
     <div class="target" id="target"></div>
     <input type="search" id="hfilter" placeholder="履歴を絞り込み">
-    <ul class="hlist" id="hlist"></ul>
+    <div id="hlist"></div>
   </aside>
 </main>
 
@@ -194,6 +200,7 @@ dialog .note{font-size:12px;color:var(--muted);margin-top:6px}
 'use strict';
 const LS_DATA = 'tds_data', LS_CFG = 'tds_pcloud', SS_STATE = 'tds_oauth_state';
 const HISTORY_LIMIT = 200;          // ロックしていない履歴の上限
+const HISTORY_ROWS = 14;            // 履歴を常に表示する段数（1段2個）。それ以降は折りたたみ
 const TOMBSTONE_DAYS = 60;          // 削除記録を残す日数（他端末への削除反映用）
 const $ = s => document.querySelector(s);
 
@@ -342,17 +349,18 @@ function openDate(date){
 function renderHistory(){
   const q = $('#hfilter').value.trim().toLowerCase();
   const list = sortedHistory().filter(h => !q || h.text.toLowerCase().includes(q));
-  let html = '', shownSep = false;
-  if(!list.length) html = `<li class="empty">${q ? '該当なし' : '予定を書き込むとここに履歴が表示されます'}</li>`;
-  list.forEach((h,i) => {
-    if(!h.locked && !shownSep && i > 0){ html += '<li class="sep">最近使った履歴</li>'; shownSep = true; }
-    html += `<li class="h ${h.locked?'locked':''}" data-key="${esc(h.text)}">
-      <button class="use" data-act="use">${esc(h.text)}</button>
+  const box = $('#hlist');
+  if(!list.length){ box.innerHTML = `<div class="empty">${q ? '該当なし' : '予定を書き込むとここに履歴が表示されます'}</div>`; return; }
+  // 上位 HISTORY_ROWS 段（1段2個）は常に表示、残りは折りたたみ。開閉状態は再描画でも保つ
+  const wasOpen = !!box.querySelector('.hmore')?.open;
+  const item = h => `<li class="h ${h.locked?'locked':''}" data-key="${esc(h.text)}">
+      <button class="use" data-act="use" title="${esc(h.text)}">${esc(h.text)}</button>
       <button class="icon-btn lock ${h.locked?'on':''}" data-act="lock" title="${h.locked?'ロック解除':'ロック（先頭に固定）'}">${h.locked?'🔒':'🔓'}</button>
       ${h.locked ? '' : '<button class="icon-btn" data-act="hdel" title="履歴から削除" aria-label="履歴から削除">✕</button>'}
     </li>`;
-  });
-  $('#hlist').innerHTML = html;
+  const top = list.slice(0, HISTORY_ROWS * 2), rest = list.slice(HISTORY_ROWS * 2);
+  box.innerHTML = `<ul class="hgrid">${top.map(item).join('')}</ul>` + (rest.length ?
+    `<details class="hmore" ${wasOpen?'open':''}><summary>その他の履歴（${rest.length}件）</summary><ul class="hgrid">${rest.map(item).join('')}</ul></details>` : '');
 }
 function toast(msg){ const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toast.t); toast.t = setTimeout(()=>t.classList.remove('show'), 1600); }
 
