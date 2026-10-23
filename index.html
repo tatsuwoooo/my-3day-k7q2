@@ -373,7 +373,23 @@ $('#today').onclick = () => {
   else { offset = 0; selected = 0; render() }
 };
 $('#viewsw').onclick = e => { const b = e.target.closest('[data-view]'); if(b) setView(b.dataset.view) };
-$('#cal').onclick = e => { const c = e.target.closest('.cell'); if(c) openDate(c.dataset.date) };
+$('#cal').onclick = e => {
+  if(Date.now() - swipedAt < 400) return;   // スワイプ直後のクリックは日付を開かない
+  const c = e.target.closest('.cell'); if(c) openDate(c.dataset.date);
+};
+// スマホ：カレンダー上の横スワイプで月送り（左へ＝翌月、右へ＝前月）
+let swipeStart = null, swipedAt = 0;
+$('#cal').addEventListener('touchstart', e => {
+  swipeStart = e.touches.length === 1 && !e.target.closest('select') ? { x: e.touches[0].clientX, y: e.touches[0].clientY } : null;
+}, { passive: true });
+$('#cal').addEventListener('touchend', e => {
+  if(!swipeStart) return;
+  const dx = e.changedTouches[0].clientX - swipeStart.x, dy = e.changedTouches[0].clientY - swipeStart.y;
+  swipeStart = null;
+  if(Math.abs(dx) < 50 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+  swipedAt = Date.now();
+  shiftMonth(dx < 0 ? 1 : -1);
+});
 $('#cal').onchange = e => {
   if(e.target.id !== 'calPick') return;
   const [y, m] = e.target.value.split('-').map(Number);
