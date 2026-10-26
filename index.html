@@ -68,6 +68,12 @@ main{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:16px;padding:16p
 .viewsw button+button{border-left:1px solid var(--line)}
 .viewsw button.sel{background:var(--accent);color:#fff}
 body.cal-mode .tabs, body.cal-mode .days, body:not(.cal-mode) .cal{display:none}
+body.soon-mode .tabs, body.soon-mode .days, body:not(.soon-mode) .soon{display:none}
+body.soon-mode #prev, body.soon-mode #next{visibility:hidden}
+.item .mark{flex:none;font-size:13px}
+.soon{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px}
+.soon h2{font-size:16px;margin:0 0 4px}
+.soon .note{font-size:13px;color:var(--muted);margin:0 0 8px}
 
 .cal{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px}
 .cal h2{font-size:16px;margin:0 0 8px}
@@ -145,7 +151,7 @@ dialog .note{font-size:12px;color:var(--muted);margin-top:6px}
   <button class="icon-btn" id="syncBtn" title="今すぐ同期"><span class="dot"></span><span id="syncText">未接続</span></button>
   <button class="icon-btn" id="settingsBtn" title="設定" aria-label="設定">⚙</button>
   <div class="viewsw" id="viewsw">
-    <button data-view="3day">3日間</button><button data-view="cal">カレンダー</button>
+    <button data-view="3day">3日間</button><button data-view="cal">カレンダー</button><button data-view="soon">近日中</button>
   </div>
 </header>
 
@@ -154,6 +160,7 @@ dialog .note{font-size:12px;color:var(--muted);margin-top:6px}
     <div class="tabs" id="tabs"></div>
     <div class="days" id="days"></div>
     <div class="cal" id="cal"></div>
+    <div class="soon" id="soon"></div>
   </section>
   <aside class="hist">
     <h2>予定履歴</h2>
@@ -252,6 +259,17 @@ function addEntry(date, text, time){
   touchHistory(text);
   commit();
 }
+// 近日中の予定：soon:true の予定。未完了の間は日付に関係なく毎日「今日」に表示され（繰り越し）、
+// 完了するとその日の予定として固定される。完了を外すとまた近日中に戻る
+const floating = e => e.soon && !e.done;
+function addSoon(text){
+  text = text.trim(); if(!text) return;
+  const id = uid();
+  data.entries[id] = { id, date: ymd(new Date()), time:'', text, done:false, soon:true, createdAt:now(), updatedAt:now(), deleted:false };
+  touchHistory(text);
+  commit();
+}
+const soonList = () => Object.values(data.entries).filter(e => !e.deleted && floating(e)).sort((a,b) => (a.createdAt||0) - (b.createdAt||0));
 function updateEntry(id, patch){
   const e = data.entries[id]; if(!e) return;
   data.entries[id] = { ...e, ...patch, updatedAt: now() };
@@ -259,7 +277,8 @@ function updateEntry(id, patch){
   commit();
 }
 function entriesOf(date){
-  return Object.values(data.entries).filter(e => !e.deleted && e.date === date).sort((a,b)=>{
+  const today = ymd(new Date());
+  return Object.values(data.entries).filter(e => !e.deleted && (floating(e) ? date === today : e.date === date)).sort((a,b)=>{
     if(a.time && b.time && a.time !== b.time) return a.time < b.time ? -1 : 1;
     if(!!a.time !== !!b.time) return a.time ? -1 : 1;     // 時刻なしは後ろ
     return (a.createdAt||0) - (b.createdAt||0);
@@ -284,7 +303,8 @@ function render(){
       <ul class="items">${list.length ? list.map(e => `
         <li class="item ${e.done?'done':''}" data-id="${e.id}">
           <input type="checkbox" data-act="toggle" ${e.done?'checked':''} aria-label="完了">
-          <span class="mv"><button data-act="mv" data-d="-1" title="前の日へ移動" aria-label="前の日へ移動">◀</button><button data-act="mv" data-d="1" title="次の日へ移動" aria-label="次の日へ移動">▶</button></span>
+          ${floating(e) ? '' : `<span class="mv"><button data-act="mv" data-d="-1" title="前の日へ移動" aria-label="前の日へ移動">◀</button><button data-act="mv" data-d="1" title="次の日へ移動" aria-label="次の日へ移動">▶</button></span>`}
+          ${e.soon ? '<span class="mark" title="近日中の予定（完了するまで毎日今日に表示）">⏳</span>' : ''}
           <span class="time">${esc(e.time)}</span>
           ${editingId===e.id
             ? `<input class="edit" data-act="editbox" value="${esc(e.text)}">`
@@ -299,16 +319,18 @@ function render(){
     </article>`;
   }).join('');
 
-  $('#target').innerHTML = `クリックで <b>${shortDate(days[selected])}</b> に追加`;
+  $('#target').innerHTML = view === 'soon' ? 'クリックで <b>近日中</b> に追加' : `クリックで <b>${shortDate(days[selected])}</b> に追加`;
   renderHistory();
 
   document.body.classList.toggle('cal-mode', view === 'cal');
+  document.body.classList.toggle('soon-mode', view === 'soon');
   document.querySelectorAll('[data-view]').forEach(b => b.classList.toggle('sel', b.dataset.view === view));
   const unit = view === 'cal' ? '月' : '日';
   for(const [id, w] of [['#prev','前'], ['#next','次']]){ $(id).title = `${w}の${unit}`; $(id).setAttribute('aria-label', `${w}の${unit}`); }
   if(view === 'cal') renderCal();
+  if(view === 'soon') renderSoon();
 
-  if(editingId){ const box = document.querySelector('.edit'); if(box){ box.focus(); box.select(); } }
+  if(editingId){ const box = document.querySelector(view === 'soon' ? '#soon .edit' : '#days .edit'); if(box){ box.focus(); box.select(); } }
 }
 // 予定は省略せず全件表示。多い日はその週の行が縦に伸びる
 function renderCal(){
@@ -322,7 +344,7 @@ function renderCal(){
     const list = entriesOf(date);
     cells += `<div class="cell ${d.getMonth() !== m ? 'other' : ''} ${date === today ? 'today' : ''}" data-date="${date}" title="${shortDate(d)} を3日間表示で開く">
       <span class="num ${wdClass(d)}">${d.getDate()}</span>
-      ${list.length ? `<div class="evs">${list.map(e => `<span class="ev ${e.done?'done':''}">${e.time ? `<span class="t">${esc(e.time)}</span>` : ''}${esc(e.text)}</span>`).join('<span class="sl">/</span>')}</div>` : ''}
+      ${list.length ? `<div class="evs">${list.map(e => `<span class="ev ${e.done?'done':''}">${e.time ? `<span class="t">${esc(e.time)}</span>` : ''}${e.soon ? '⏳' : ''}${esc(e.text)}</span>`).join('<span class="sl">/</span>')}</div>` : ''}
     </div>`;
   }
   // 年月プルダウン：表示中の月の前後2年分
@@ -333,6 +355,23 @@ function renderCal(){
   }
   $('#cal').innerHTML = `<h2><select id="calPick" aria-label="年月を選ぶ">${opts}</select></h2>
     <div class="grid">${WD.map((w, i) => `<div class="wd ${i === 0 ? 'sun' : i === 6 ? 'sat' : ''}">${w}</div>`).join('')}${cells}</div>`;
+}
+function renderSoon(){
+  const list = soonList();
+  $('#soon').innerHTML = `<h2>近日中</h2>
+    <p class="note">ここに入れた予定は、完了するまで毎日「今日」の予定に表示されます（その日に終わらなければ翌日へ繰り越し）</p>
+    <ul class="items">${list.length ? list.map(e => `
+      <li class="item" data-id="${e.id}">
+        <input type="checkbox" data-act="toggle" aria-label="完了（今日の予定として記録）" title="完了にすると今日の予定として記録されます">
+        ${editingId===e.id
+          ? `<input class="edit" data-act="editbox" value="${esc(e.text)}">`
+          : `<span class="text" data-act="edit" title="クリックで編集">${esc(e.text)}</span>`}
+        <button class="icon-btn" data-act="del" title="削除" aria-label="削除">✕</button>
+      </li>`).join('') : '<li class="empty">近日中の予定はありません</li>'}</ul>
+    <form class="add" id="soonAdd">
+      <input name="text" placeholder="近日中にやりたいことを入力" autocomplete="off" enterkeyhint="done">
+      <button class="btn primary">追加</button>
+    </form>`;
 }
 function setView(v){
   if(v === 'cal'){ const d = dayAt(selected); calMonth = new Date(d.getFullYear(), d.getMonth(), 1); }
@@ -369,7 +408,8 @@ const shiftMonth = n => { calMonth = new Date(calMonth.getFullYear(), calMonth.g
 $('#prev').onclick = () => { if(view === 'cal') shiftMonth(-1); else { offset--; render() } };
 $('#next').onclick = () => { if(view === 'cal') shiftMonth(1); else { offset++; render() } };
 $('#today').onclick = () => {
-  if(view === 'cal'){ const t = new Date(); calMonth = new Date(t.getFullYear(), t.getMonth(), 1); render(); }
+  if(view === 'soon'){ offset = 0; selected = 0; setView('3day'); }
+  else if(view === 'cal'){ const t = new Date(); calMonth = new Date(t.getFullYear(), t.getMonth(), 1); render(); }
   else { offset = 0; selected = 0; render() }
 };
 $('#viewsw').onclick = e => { const b = e.target.closest('[data-view]'); if(b) setView(b.dataset.view) };
@@ -416,12 +456,16 @@ function selectDay(i){
   $('#target').innerHTML = `クリックで <b>${shortDate(dayAt(i))}</b> に追加`;
 }
 $('#days').addEventListener('focusin', e => { const day = e.target.closest('.day'); if(day) selectDay(+day.dataset.idx) });
-$('#days').addEventListener('click', e => {
+function itemsClick(e){
   const day = e.target.closest('.day');
   if(day) selectDay(+day.dataset.idx);
   const act = e.target.dataset.act, li = e.target.closest('.item'); if(!li) return;
   const id = li.dataset.id;
-  if(act === 'toggle') updateEntry(id, { done: e.target.checked });
+  if(act === 'toggle'){
+    const done = e.target.checked;
+    if(data.entries[id].soon && done){ updateEntry(id, { done, date: ymd(new Date()) }); toast('完了しました（今日の予定として記録）'); }
+    else updateEntry(id, { done });
+  }
   else if(act === 'del'){ data.entries[id] = { ...data.entries[id], deleted:true, updatedAt:now() }; commit(); }
   else if(act === 'edit'){ editingId = id; render(); }
   else if(act === 'mv'){
@@ -430,24 +474,36 @@ $('#days').addEventListener('click', e => {
     updateEntry(id, { date: ymd(to) });
     toast(`${shortDate(to)} に移動しました`);
   }
-});
+}
 function finishEdit(box, save){
   if(!editingId) return;
   const id = editingId; editingId = null;
   const v = box.value.trim();
   if(save && v && v !== data.entries[id].text) updateEntry(id, { text: v }); else render();
 }
-$('#days').addEventListener('keydown', e => {
-  if(e.target.dataset.act !== 'editbox') return;
-  if(e.key === 'Enter' && !e.isComposing){ e.preventDefault(); finishEdit(e.target, true) }
-  if(e.key === 'Escape') finishEdit(e.target, false);
+for(const box of [$('#days'), $('#soon')]){
+  box.addEventListener('click', itemsClick);
+  box.addEventListener('keydown', e => {
+    if(e.target.dataset.act !== 'editbox') return;
+    if(e.key === 'Enter' && !e.isComposing){ e.preventDefault(); finishEdit(e.target, true) }
+    if(e.key === 'Escape') finishEdit(e.target, false);
+  });
+  box.addEventListener('focusout', e => { if(e.target.dataset.act === 'editbox') finishEdit(e.target, true) });
+}
+$('#soon').addEventListener('submit', e => {
+  e.preventDefault();
+  const text = e.target.text.value;
+  if(!text.trim()) return;
+  addSoon(text);
+  $('#soonAdd').text.focus();
 });
-$('#days').addEventListener('focusout', e => { if(e.target.dataset.act === 'editbox') finishEdit(e.target, true) });
 
 $('#hlist').addEventListener('click', e => {
   const act = e.target.closest('[data-act]')?.dataset.act, li = e.target.closest('.h'); if(!li || !act) return;
   const key = li.dataset.key, h = data.history[key]; if(!h) return;
-  if(act === 'use'){
+  if(act === 'use' && view === 'soon'){
+    addSoon(h.text); toast('近日中に追加しました');
+  } else if(act === 'use'){
     const date = ymd(dayAt(selected));
     const f = document.querySelector(`.add[data-date="${date}"]`);
     addEntry(date, h.text, f ? f.time.value : '');
