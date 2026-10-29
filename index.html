@@ -62,6 +62,7 @@ main{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:16px;padding:16p
 .add input{border:1px solid var(--line);background:var(--bg);border-radius:8px;padding:6px 8px;min-width:0}
 .add input[name=time]{width:7em;flex:none}
 .add input[name=text]{flex:1 1 8em}
+.add select{border:1px solid var(--line);background:var(--bg);border-radius:8px;padding:6px 4px;flex:none;font:inherit;color:inherit}
 
 .viewsw{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;flex:none}
 .viewsw button{border:none;background:var(--card);padding:6px 10px;white-space:nowrap}
@@ -119,6 +120,16 @@ dialog label{display:block;font-size:13px;color:var(--muted);margin:10px 0 4px}
 dialog input[type=text]{width:100%;border:1px solid var(--line);background:var(--bg);border-radius:8px;padding:6px 8px}
 dialog .row{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
 dialog .note{font-size:12px;color:var(--muted);margin-top:6px}
+.rules{list-style:none;margin:0;padding:0}
+.rules li{border:1px solid var(--line);border-radius:8px;padding:6px 8px;margin-bottom:6px}
+.rules .rl{font-size:13px;color:var(--accent)}
+.rules .rl small{color:var(--muted);margin-left:6px}
+.rules .re{display:flex;gap:6px;flex-wrap:wrap;margin-top:4px}
+.rules .re input{border:1px solid var(--line);background:var(--bg);border-radius:8px;padding:4px 6px;min-width:0}
+.rules .re input[type=time]{width:7em;flex:none}
+.rules .re input[type=text]{flex:1 1 8em;width:auto}
+.rules .re .btn{padding:4px 10px}
+.rules .empty{border:none;padding:0}
 #toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--text);color:var(--bg);
   padding:8px 16px;border-radius:20px;font-size:14px;opacity:0;pointer-events:none;transition:opacity .2s;z-index:20}
 #toast.show{opacity:.95}
@@ -190,6 +201,8 @@ dialog .note{font-size:12px;color:var(--muted);margin-top:6px}
     <button class="btn" id="disconnectBtn">切断</button>
     <button class="btn" id="syncNowBtn">今すぐ同期</button>
   </div>
+  <label>繰り返し予定</label>
+  <ul class="rules" id="rules"></ul>
   <label>バックアップ</label>
   <div class="row" style="margin-top:0">
     <button class="btn" id="exportBtn">JSONを書き出し</button>
@@ -215,7 +228,7 @@ function loadLS(k){ try{ return JSON.parse(localStorage.getItem(k)) }catch(e){ r
 function saveLS(k,v){ try{ localStorage.setItem(k, JSON.stringify(v)) }catch(e){} }
 function normalize(d){
   d = d && typeof d === 'object' ? d : {};
-  return { version:1, entries: d.entries || {}, history: d.history || {} };
+  return { version:1, entries: d.entries || {}, history: d.history || {}, rules: d.rules || {} };
 }
 const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,8);
@@ -239,6 +252,7 @@ function relLabel(d){
 }
 function wdClass(d){ return d.getDay()===0 ? 'sun' : d.getDay()===6 ? 'sat' : '' }
 function shortDate(d){ return `${d.getMonth()+1}/${d.getDate()}(${WD[d.getDay()]})` }
+function parseYmd(s){ const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d) }
 
 /* ---------- データ操作 ---------- */
 function commit(){ data.version = 1; saveLS(LS_DATA, data); render(); scheduleSync(); }
@@ -270,15 +284,65 @@ function addSoon(text){
   commit();
 }
 const soonList = () => Object.values(data.entries).filter(e => !e.deleted && floating(e)).sort((a,b) => (a.createdAt||0) - (b.createdAt||0));
+/* 繰り返し予定：data.rules に決まり {id, freq:'weekly'|'monthly'|'yearly', start, end, time, text} だけを保存し、
+   各回は表示のときに作る（id は「決まりのid@元の日付」）。その回を完了・編集・移動・削除したときだけ
+   同じ id の普通の予定として data.entries に保存し、以後はそちらが優先される（端末が違っても同じ id になるので2重にならない） */
+const FREQ = { weekly:'毎週', monthly:'毎月', yearly:'毎年' };
+function occursOn(r, date){
+  if(r.deleted || date < r.start || (r.end && date > r.end)) return false;
+  const d = parseYmd(date), s = parseYmd(r.start);
+  if(r.freq === 'weekly') return d.getDay() === s.getDay();
+  if(r.freq === 'yearly' && d.getMonth() !== s.getMonth()) return false;
+  // その日がない月は末日（31日→30日・28日、2/29→平年は2/28）
+  const last = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+  return d.getDate() === Math.min(s.getDate(), last);
+}
+const occurrence = (r, date) => ({ id: r.id + '@' + date, date, time: r.time, text: r.text, done:false, rule: r.id, createdAt: r.createdAt, updatedAt:0, deleted:false });
+function virtualEntry(id){ const [rid, date] = id.split('@'), r = data.rules[rid]; return r && date ? occurrence(r, date) : null }
+const entry = id => data.entries[id] || virtualEntry(id);
+function ruleLabel(r){
+  const s = parseYmd(r.start), m = s.getMonth() + 1, d = s.getDate();
+  if(r.freq === 'weekly') return `毎週${WD[s.getDay()]}曜`;
+  if(r.freq === 'monthly') return `毎月${d}日` + (d > 28 ? '（ない月は末日）' : '');
+  return `毎年${m}月${d}日` + (m === 2 && d === 29 ? '（平年は2/28）' : '');
+}
+function addRule(date, text, time, freq){
+  text = text.trim(); if(!text) return;
+  const id = uid();
+  data.rules[id] = { id, freq, start: date, end:'', time: time||'', text, createdAt:now(), updatedAt:now(), deleted:false };
+  touchHistory(text);
+  commit();
+  toast(`${ruleLabel(data.rules[id])}に繰り返します`);
+}
+const ruleEntries = rid => Object.values(data.entries).filter(e => e.rule === rid && !e.deleted);
+// 決まりの名前・時刻を変える。今日以降の回で、決まりと同じ内容のまま保存されているものも合わせて変える
+function updateRule(rid, text, time){
+  const r = data.rules[rid], today = ymd(new Date());
+  for(const e of ruleEntries(rid)) if(e.id.split('@')[1] >= today && e.text === r.text && e.time === r.time)
+    data.entries[e.id] = { ...e, text, time, updatedAt: now() };
+  data.rules[rid] = { ...r, text, time, updatedAt: now() };
+  if(text !== r.text) touchHistory(text);
+  commit();
+}
+// 停止：今日以降の回を消す（過去の回と、完了済みの回は残す）。まだ始まっていない決まりは丸ごと消す
+function stopRule(rid){
+  const r = data.rules[rid], today = ymd(new Date()), y = new Date(); y.setDate(y.getDate() - 1);
+  for(const e of ruleEntries(rid)) if(e.id.split('@')[1] >= today && !e.done) data.entries[e.id] = { ...e, deleted:true, updatedAt: now() };
+  data.rules[rid] = r.start >= today ? { ...r, deleted:true, updatedAt: now() } : { ...r, end: ymd(y), updatedAt: now() };
+  commit();
+}
+
 function updateEntry(id, patch){
-  const e = data.entries[id]; if(!e) return;
+  const e = entry(id); if(!e) return;
   data.entries[id] = { ...e, ...patch, updatedAt: now() };
   if(patch.text) touchHistory(patch.text);
   commit();
 }
 function entriesOf(date){
   const today = ymd(new Date());
-  return Object.values(data.entries).filter(e => !e.deleted && (floating(e) ? date === today : e.date === date)).sort((a,b)=>{
+  const list = Object.values(data.entries).filter(e => !e.deleted && (floating(e) ? date === today : e.date === date));
+  for(const r of Object.values(data.rules)) if(occursOn(r, date) && !data.entries[r.id + '@' + date]) list.push(occurrence(r, date));
+  return list.sort((a,b)=>{
     if(a.time && b.time && a.time !== b.time) return a.time < b.time ? -1 : 1;
     if(!!a.time !== !!b.time) return a.time ? -1 : 1;     // 時刻なしは後ろ
     return (a.createdAt||0) - (b.createdAt||0);
@@ -305,6 +369,7 @@ function render(){
           <input type="checkbox" data-act="toggle" ${e.done?'checked':''} aria-label="完了">
           ${floating(e) ? '' : `<span class="mv"><button data-act="mv" data-d="-1" title="前の日へ移動" aria-label="前の日へ移動">◀</button><button data-act="mv" data-d="1" title="次の日へ移動" aria-label="次の日へ移動">▶</button></span>`}
           ${e.soon ? '<span class="mark" title="近日中の予定（完了するまで毎日今日に表示）">⏳</span>' : ''}
+          ${e.rule ? `<span class="mark" title="繰り返し予定${data.rules[e.rule] ? '（' + esc(ruleLabel(data.rules[e.rule])) + '）' : ''}。変更・停止は ⚙ から">🔁</span>` : ''}
           <span class="time">${esc(e.time)}</span>
           ${editingId===e.id
             ? `<input class="edit" data-act="editbox" value="${esc(e.text)}">`
@@ -313,6 +378,9 @@ function render(){
         </li>`).join('') : '<li class="empty">予定はありません</li>'}</ul>
       <form class="add" data-date="${date}">
         <input type="time" name="time" aria-label="時刻">
+        <select name="rep" aria-label="繰り返し" title="繰り返し（${esc(shortDate(d))}を起点に）">
+          <option value="">繰り返しなし</option><option value="weekly">毎週</option><option value="monthly">毎月</option><option value="yearly">毎年</option>
+        </select>
         <input name="text" placeholder="予定を入力" autocomplete="off" enterkeyhint="done">
         <button class="btn primary">追加</button>
       </form>
@@ -344,7 +412,7 @@ function renderCal(){
     const list = entriesOf(date);
     cells += `<div class="cell ${d.getMonth() !== m ? 'other' : ''} ${date === today ? 'today' : ''}" data-date="${date}" title="${shortDate(d)} を3日間表示で開く">
       <span class="num ${wdClass(d)}">${d.getDate()}</span>
-      ${list.length ? `<div class="evs">${list.map(e => `<span class="ev ${e.done?'done':''}">${e.time ? `<span class="t">${esc(e.time)}</span>` : ''}${e.soon ? '⏳' : ''}${esc(e.text)}</span>`).join('<span class="sl">/</span>')}</div>` : ''}
+      ${list.length ? `<div class="evs">${list.map(e => `<span class="ev ${e.done?'done':''}">${e.time ? `<span class="t">${esc(e.time)}</span>` : ''}${e.soon ? '⏳' : ''}${e.rule ? '🔁' : ''}${esc(e.text)}</span>`).join('<span class="sl">/</span>')}</div>` : ''}
     </div>`;
   }
   // 年月プルダウン：表示中の月の前後2年分
@@ -443,7 +511,8 @@ $('#days').addEventListener('submit', e => {
   const f = e.target, text = f.text.value;
   if(!text.trim()) return;
   selected = +f.closest('.day').dataset.idx;
-  addEntry(f.dataset.date, text, f.time.value);
+  if(f.rep.value) addRule(f.dataset.date, text, f.time.value, f.rep.value);
+  else addEntry(f.dataset.date, text, f.time.value);
   const nf = document.querySelector(`.add[data-date="${f.dataset.date}"]`);
   if(nf) nf.text.focus();
 });
@@ -463,13 +532,13 @@ function itemsClick(e){
   const id = li.dataset.id;
   if(act === 'toggle'){
     const done = e.target.checked;
-    if(data.entries[id].soon && done){ updateEntry(id, { done, date: ymd(new Date()) }); toast('完了しました（今日の予定として記録）'); }
+    if(entry(id).soon && done){ updateEntry(id, { done, date: ymd(new Date()) }); toast('完了しました（今日の予定として記録）'); }
     else updateEntry(id, { done });
   }
-  else if(act === 'del'){ data.entries[id] = { ...data.entries[id], deleted:true, updatedAt:now() }; commit(); }
+  else if(act === 'del'){ data.entries[id] = { ...entry(id), deleted:true, updatedAt:now() }; commit(); if(id.includes('@')) toast('この日の分だけ削除しました'); }
   else if(act === 'edit'){ editingId = id; render(); }
   else if(act === 'mv'){
-    const [y, m, d] = data.entries[id].date.split('-').map(Number);
+    const [y, m, d] = entry(id).date.split('-').map(Number);
     const to = new Date(y, m - 1, d + +e.target.dataset.d);
     updateEntry(id, { date: ymd(to) });
     toast(`${shortDate(to)} に移動しました`);
@@ -479,7 +548,7 @@ function finishEdit(box, save){
   if(!editingId) return;
   const id = editingId; editingId = null;
   const v = box.value.trim();
-  if(save && v && v !== data.entries[id].text) updateEntry(id, { text: v }); else render();
+  if(save && v && v !== entry(id).text) updateEntry(id, { text: v }); else render();
 }
 for(const box of [$('#days'), $('#soon')]){
   box.addEventListener('click', itemsClick);
@@ -626,14 +695,18 @@ function mergeMap(a, b){
 }
 function purge(d){
   const limit = now() - TOMBSTONE_DAYS * 864e5;
-  for(const m of [d.entries, d.history]) for(const k in m) if(m[k].deleted && (m[k].updatedAt||0) < limit) delete m[k];
+  const liveRule = rid => rid && d.rules[rid] && !d.rules[rid].deleted;
+  for(const m of [d.entries, d.history, d.rules]) for(const k in m){
+    // 繰り返し予定の回を消した記録は、決まりが残っている間は消さない（消すとその回がまた現れる）
+    if(m[k].deleted && (m[k].updatedAt||0) < limit && !liveRule(m[k].rule)) delete m[k];
+  }
   return d;
 }
 function sameMap(a, b){
   const ka = Object.keys(a), kb = Object.keys(b);
   return ka.length === kb.length && ka.every(k => b[k] && b[k].updatedAt === a[k].updatedAt);
 }
-const sameData = (a, b) => sameMap(a.entries, b.entries) && sameMap(a.history, b.history);
+const sameData = (a, b) => sameMap(a.entries, b.entries) && sameMap(a.history, b.history) && sameMap(a.rules, b.rules);
 
 async function sync(){
   if(!connected()) return;
@@ -644,6 +717,7 @@ async function sync(){
     const merged = purge(normalize({
       entries: mergeMap(data.entries, remote ? remote.entries : {}),
       history: mergeMap(data.history, remote ? remote.history : {}),
+      rules: mergeMap(data.rules, remote ? remote.rules : {}),
     }));
     if(!sameData(merged, data)){ data = merged; saveLS(LS_DATA, data); if(!editingId) render(); }
     if(!remote || (remotePlain && cfg.encKey) || !sameData(merged, remote)) await pushRemote(merged);
@@ -718,6 +792,7 @@ function openSettings(){
     ? 'この端末には暗号化パスワードが設定されています。pCloud には暗号化して保存します'
     : '未設定のままだと、共有リンクを知っている人は予定を読めます。忘れると pCloud 上のデータは誰にも読めません';
   $('#redirectUri').textContent = redirectUri();
+  renderRules();
   const where = cfg.folderId != null ? `<br>保存先: ${esc(cfg.folderLabel || '')}/${FILE_NAME}` : '';
   $('#connState').innerHTML = connected()
     ? `<span style="color:var(--ok)">● pCloudに接続中</span>（${esc(cfg.host)}）${where}`
@@ -725,6 +800,33 @@ function openSettings(){
   $('#settings').showModal();
 }
 $('#settingsBtn').onclick = openSettings;
+// 停止していない繰り返し予定の一覧（名前・時刻の変更と停止）
+function renderRules(){
+  const list = Object.values(data.rules).filter(r => !r.deleted && !r.end).sort((a,b) => (a.createdAt||0) - (b.createdAt||0));
+  $('#rules').innerHTML = list.length ? list.map(r => `<li data-rid="${r.id}">
+      <div class="rl">🔁 ${esc(ruleLabel(r))}<small>${r.start.replace(/-/g, '/')} から</small></div>
+      <div class="re">
+        <input type="time" name="time" value="${esc(r.time)}" aria-label="時刻">
+        <input type="text" name="text" value="${esc(r.text)}" aria-label="予定名">
+        <button class="btn" data-ract="save">保存</button>
+        <button class="btn" data-ract="stop">停止</button>
+      </div>
+    </li>`).join('') : '<li class="empty note">ありません（予定を追加するときに「毎週／毎月／毎年」を選ぶと作れます）</li>';
+}
+$('#rules').onclick = e => {
+  const act = e.target.dataset.ract, li = e.target.closest('[data-rid]'); if(!act || !li) return;
+  const rid = li.dataset.rid, r = data.rules[rid]; if(!r) return;
+  if(act === 'save'){
+    const text = li.querySelector('[name=text]').value.trim(), time = li.querySelector('[name=time]').value;
+    if(!text){ toast('予定名を入力してください'); return; }
+    if(text === r.text && time === r.time) return;
+    updateRule(rid, text, time); toast('繰り返し予定を変更しました');
+  } else if(act === 'stop'){
+    if(!confirm(`「${r.text}」（${ruleLabel(r)}）の繰り返しを停止しますか？\n今日以降の分が消えます（過去の分は残ります）`)) return;
+    stopRule(rid); toast('繰り返しを停止しました');
+  }
+  renderRules();
+};
 $('#closeSettings').onclick = async () => {
   const changed = await readSettingsForm(); $('#settings').close();
   if(!connected()) setStatus('', '未接続'); else if(changed) sync();
@@ -743,7 +845,7 @@ $('#importFile').onchange = async e => {
   const f = e.target.files[0]; if(!f) return;
   try{
     const d = normalize(JSON.parse(await f.text()));
-    data = normalize({ entries: mergeMap(data.entries, d.entries), history: mergeMap(data.history, d.history) });
+    data = normalize({ entries: mergeMap(data.entries, d.entries), history: mergeMap(data.history, d.history), rules: mergeMap(data.rules, d.rules) });
     commit(); toast('読み込みました');
   }catch(err){ alert('読み込めませんでした: ' + err.message) }
   e.target.value = '';
