@@ -53,6 +53,8 @@ main{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:16px;padding:16p
 .item .mv{display:flex;flex:none}
 .item .mv button{border:none;background:none;color:var(--muted);padding:2px 3px;font-size:12px;line-height:1;border-radius:4px}
 .item .mv button:hover{background:var(--bg);color:var(--accent)}
+.item .mv svg{width:13px;height:13px;display:block;pointer-events:none}
+#movePick{position:fixed;width:1px;height:1px;opacity:0;pointer-events:none;border:0;padding:0}
 .item .time{font-variant-numeric:tabular-nums;color:var(--accent);font-size:13px;flex:none;min-width:3em}
 .item .text{flex:1;word-break:break-word;cursor:text}
 .item.done .text{text-decoration:line-through;color:var(--muted)}
@@ -215,6 +217,7 @@ dialog .note{font-size:12px;color:var(--muted);margin-top:6px}
 </dialog>
 
 <div id="toast"></div>
+<input type="date" id="movePick" tabindex="-1" aria-hidden="true">
 
 <script>
 'use strict';
@@ -355,6 +358,7 @@ function sortedHistory(){
 }
 
 /* ---------- 描画 ---------- */
+const CAL_ICON = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1.75" y="3" width="12.5" height="11.25" rx="1.5"/><path d="M1.75 6.5h12.5M5 1.5v3M11 1.5v3"/></svg>';
 function render(){
   const days = [0,1,2].map(dayAt);
   $('#tabs').innerHTML = days.map((d,i)=>
@@ -367,7 +371,7 @@ function render(){
       <ul class="items">${list.length ? list.map(e => `
         <li class="item ${e.done?'done':''}" data-id="${e.id}">
           <input type="checkbox" data-act="toggle" ${e.done?'checked':''} aria-label="完了">
-          ${floating(e) ? '' : `<span class="mv"><button data-act="mv" data-d="-1" title="前の日へ移動" aria-label="前の日へ移動">◀</button><button data-act="mv" data-d="1" title="次の日へ移動" aria-label="次の日へ移動">▶</button></span>`}
+          ${floating(e) ? '' : `<span class="mv"><button data-act="mv" data-d="-1" title="前の日へ移動" aria-label="前の日へ移動">◀</button><button data-act="pick" title="日付を選んで移動" aria-label="日付を選んで移動">${CAL_ICON}</button><button data-act="mv" data-d="1" title="次の日へ移動" aria-label="次の日へ移動">▶</button></span>`}
           ${e.soon ? '<span class="mark" title="近日中の予定（完了するまで毎日今日に表示）">⏳</span>' : ''}
           ${e.rule ? `<span class="mark" title="繰り返し予定${data.rules[e.rule] ? '（' + esc(ruleLabel(data.rules[e.rule])) + '）' : ''}。変更・停止は ⚙ から">🔁</span>` : ''}
           <span class="time">${esc(e.time)}</span>
@@ -543,7 +547,24 @@ function itemsClick(e){
     updateEntry(id, { date: ymd(to) });
     toast(`${shortDate(to)} に移動しました`);
   }
+  else if(act === 'pick') openMovePicker(id, e.target);
 }
+// 📅 ボタン：ブラウザ標準の日付選択（カレンダー）を出し、選んだ日へ予定を移動する
+let movePickId = null;
+function openMovePicker(id, btn){
+  const inp = $('#movePick'), r = btn.getBoundingClientRect();
+  movePickId = id;
+  inp.value = entry(id).date;
+  inp.style.left = r.left + 'px'; inp.style.top = r.bottom + 'px';   // カレンダーをボタンの近くに出すため
+  try{ inp.showPicker(); }catch(err){ inp.style.pointerEvents = 'auto'; inp.focus(); inp.click(); }
+}
+$('#movePick').addEventListener('change', e => {
+  const id = movePickId, v = e.target.value; movePickId = null; e.target.style.pointerEvents = '';
+  if(!id || !v || !entry(id) || v === entry(id).date) return;
+  updateEntry(id, { date: v });
+  const [y, m, d] = v.split('-').map(Number);
+  toast(`${shortDate(new Date(y, m - 1, d))} に移動しました`);
+});
 function finishEdit(box, save){
   if(!editingId) return;
   const id = editingId; editingId = null;
